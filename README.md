@@ -1,13 +1,18 @@
 # Video Organization Assistant
 
 A local app for sorting and trimming folders of video clips before you edit or
-deliver them. Point it at a folder whose subfolders are "lines" (e.g. `L1`, `L2`,
-`L3`), preview every clip, drop the ones you don't want, mark the keepers, and
-package the result into a single archive — all from a clean browser UI driven by
-a tiny Python backend.
+deliver them — from a clean browser UI driven by a tiny Python backend.
+
+It has **two stages** and picks the right one automatically when you open a folder:
+
+- **Stage 1 — Sort into lines:** when a folder has loose clips sitting in it, you
+  review them one at a time and file each into a line (`L1`, `L2`, …) with a key
+  press or a button. Then it collects thumbnails and icons.
+- **Stage 2 — Organize:** once everything is sorted into line folders, you preview,
+  trim, mark, and package — the duration timeline, drag-between-lines, etc.
 
 Originally built for organizing metro/transit b-roll (Line 1, Line 2, …), but it
-works for any folder-of-folders of clips.
+works for any folder of clips.
 
 ![lines and a duration timeline at the bottom](https://img.shields.io/badge/UI-local%20browser%20app-4ea1ff) ![python](https://img.shields.io/badge/python-3.8%2B-blue) ![ffmpeg](https://img.shields.io/badge/requires-ffmpeg-orange)
 
@@ -15,8 +20,26 @@ works for any folder-of-folders of clips.
 
 ## Features
 
-- **Auto-loads on folder pick** — choose a folder and it scans immediately. Each
-  subfolder becomes a **Line** (`L1` → "Line 1", etc.).
+### Stage 1 — sorting loose clips into lines
+
+- **One-by-one review** — each loose clip in the root plays in a large preview
+  (the raw `.MOV`, so it works best in Safari / on macOS where HEVC decodes).
+- **File into a line** — press **1–9** or click a line button to move the clip
+  into `L1`, `L2`, … A **+** adds more lines (and is how you reach lines past 9).
+- **Flag as unused** (the ⚑ button / **F**) files the clip into that line's
+  `Unused/` subfolder instead.
+- **Mark on the way in** — **M** main, **B** sub, **O** outro (same `U USED` /
+  `U I USED` / `U O USED` naming as Stage 2).
+- **Skip** (**S**) sends a clip to the back of the queue to decide later.
+- When the last clip is filed, it prompts you to add **thumbnails** then **icons**,
+  then transitions to Stage 2 automatically.
+
+### Stage 2 — organizing sorted lines
+
+- **Assets bar at the top** — your thumbnails and icons, each removable, with a
+  **+** to add more at any time (drag-drop or file picker).
+- **Auto-loads on folder pick** — each line subfolder becomes a **Line**
+  (`L1` → "Line 1", etc.).
 - **Filmstrip previews** — every clip shows its first frame; hover and move the
   mouse left↔right to scrub through the clip. Works for iPhone HEVC `.MOV` that
   browsers can't normally play.
@@ -91,31 +114,63 @@ The app serves at `http://127.0.0.1:8765/` and opens your browser.
 
 ## Usage
 
-1. **Choose Folder…** (or paste a path and press Enter). The folder's subfolders
-   become Lines. Previews generate once with a progress bar, then are cached.
-2. **Hover** a clip to scrub its filmstrip; the tooltip shows its duration.
-3. **Click** a clip to remove it (→ `Unused/`); click it again under the
-   **Unused** section to restore it.
-4. **Drag** a clip onto another line to move it there.
-5. **Double-click** a clip to open it in your default player.
-6. Use the **⋯ menu** to mark a clip as main / sub / outro, or restore its name.
-7. Click **📦 Package Video** to produce `<FolderName>.zip` next to the folder.
+**Choose Folder…** (or paste a path and press Enter). The app detects the stage:
 
-### Folder layout it expects
+### If the folder has loose clips → Stage 1 (sort)
 
-Pick a **parent folder**. Each **immediate subfolder** inside it becomes one
-**Line**. The clips go directly inside those subfolders.
+1. Each clip plays in the big preview. Decide which line it belongs to.
+2. Optionally **⚑ flag** it unused, and/or mark it **main / sub / outro**.
+3. Press a **number (1–9)** or click a **line button** to file it; the next clip
+   loads automatically. Use **+** to add more lines (including 10+).
+4. **Skip** (S) defers a clip; **Open ↗** opens it in your default player.
+5. After the last clip, add **thumbnails** and **icons** when prompted (or Skip).
+   The app then moves into Stage 2.
+
+   | Key | Action | Key | Action |
+   |-----|--------|-----|--------|
+   | `1`–`9` | file into Line N | `F` | flag unused |
+   | `+` | add a line | `S` | skip |
+   | `M` | mark main | `B` | mark sub |
+   | `O` | mark outro | | |
+
+### If the folder is already sorted → Stage 2 (organize)
+
+1. Previews generate once with a progress bar, then are cached.
+2. The **assets bar** at the top shows thumbnails/icons; use **+** to add or **×**
+   to remove them.
+3. **Hover** a clip to scrub its filmstrip; the tooltip shows its duration.
+4. **Click** a clip to remove it (→ `Unused/`); click it again to restore it.
+5. **Drag** a clip onto another line to move it there.
+6. **Double-click** a clip to open it in your default player.
+7. Use the **⋯ menu** to mark a clip as main / sub / outro, or restore its name.
+8. Click **📦 Package Video** to produce `<FolderName>.zip` next to the folder.
+
+### Folder layout
+
+**Stage 1 — before sorting:** loose clips sit directly in the folder. The app
+sees those and starts the sorter. (Existing `L#` folders, if any, become buttons.)
 
 ```
 My Project/              ← the folder you choose in the app
+├── IMG_0001.MOV         (loose clips → reviewed one by one)
+├── IMG_0002.MOV
+└── IMG_0003.MOV
+```
+
+**Stage 2 — after sorting:** every clip lives in a line folder. No loose clips, so
+the app opens the organizer. Sorting and the asset prompts produce this:
+
+```
+My Project/
 ├── L1/                  → shown as "Line 1"
 │   ├── IMG_0001.MOV
-│   ├── IMG_0002.MOV
-│   └── Unused/          (created automatically for removed clips)
+│   ├── U USED.MOV       (a clip you marked "main")
+│   └── Unused/          (clips flagged unused / removed)
 ├── L2/                  → shown as "Line 2"
 │   └── ...
-└── L3/                  → shown as "Line 3"
-    └── ...
+└── Assets/
+    ├── Thumbnails/      (whatever you added in the thumbnail step)
+    └── Icons/           (whatever you added in the icon step)
 ```
 
 ### Naming rules

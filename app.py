@@ -10,6 +10,7 @@ It starts a local server and opens your browser.
 """
 
 import os
+import re
 import sys
 import json
 import shutil
@@ -378,6 +379,129 @@ def open_in_viewer(path):
 
 
 # ----------------------------------------------------------------------------
+# Stage 1 (triage) + assets
+# ----------------------------------------------------------------------------
+
+ASSETS_DIR = "Assets"
+ASSET_KINDS = {"thumbnails": "Thumbnails", "icons": "Icons"}
+
+CONTENT_TYPES = {
+    ".mov": "video/quicktime", ".mp4": "video/mp4", ".m4v": "video/x-m4v",
+    ".avi": "video/x-msvideo", ".mkv": "video/x-matroska",
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+    ".bmp": "image/bmp", ".heic": "image/heic", ".tiff": "image/tiff",
+}
+
+
+def content_type_for(name):
+    return CONTENT_TYPES.get(os.path.splitext(name)[1].lower(), "application/octet-stream")
+
+
+def safe_join(root, rel):
+    """Join rel onto root, refusing anything that escapes root."""
+    root = os.path.abspath(root)
+    full = os.path.abspath(os.path.join(root, rel))
+    if full != root and not full.startswith(root + os.sep):
+        raise ValueError("path escapes root")
+    return full
+
+
+def loose_clips(root):
+    """Video files sitting directly in the root (not yet sorted into a line)."""
+    if not os.path.isdir(root):
+        return []
+    return sorted(n for n in os.listdir(root)
+                  if is_video(n) and os.path.isfile(os.path.join(root, n)))
+
+
+def line_numbers(root):
+    """Existing L<n> line-folder numbers in the root, sorted ascending."""
+    nums = set()
+    if os.path.isdir(root):
+        for n in os.listdir(root):
+            if os.path.isdir(os.path.join(root, n)):
+                m = re.fullmatch(r"[Ll]\s*0*(\d+)", n.strip())
+                if m:
+                    nums.add(int(m.group(1)))
+    return sorted(nums)
+
+
+def asset_dir(root, kind):
+    return os.path.join(root, ASSETS_DIR, ASSET_KINDS[kind])
+
+
+def list_assets(root):
+    out = {}
+    for kind in ASSET_KINDS:
+        d = asset_dir(root, kind)
+        out[kind] = (sorted(n for n in os.listdir(d)
+                            if os.path.isfile(os.path.join(d, n)) and not is_junk(n))
+                     if os.path.isdir(d) else [])
+    return out
+
+
+def folder_state(root):
+    """Phase 1 if there are loose clips to sort, else phase 2."""
+    root = os.path.abspath(root)
+    loose = loose_clips(root)
+    return {
+        "root": root,
+        "phase": 1 if loose else 2,
+        "loose": loose,
+        "lines": line_numbers(root),
+        "assets": list_assets(root),
+    }
+
+
+def assign_clip(root, name, line_num, unused, mark):
+    """Move a loose root clip into L<n>/ (or L<n>/Unused/), applying a mark rename."""
+    src = safe_join(root, name)
+    if os.path.dirname(src) != os.path.abspath(root) or not os.path.isfile(src):
+        raise FileNotFoundError("clip not found in root")
+    dest_dir = os.path.join(root, f"L{int(line_num)}")
+    if unused:
+        dest_dir = os.path.join(dest_dir, UNUSED_NAME)
+    os.makedirs(dest_dir, exist_ok=True)
+    ext = os.path.splitext(name)[1]
+    base = MARK_BASE[mark] if mark in MARK_BASE else os.path.splitext(name)[0]
+    cand = os.path.join(dest_dir, base + ext)
+    i = 2
+    while os.path.exists(cand) and os.path.abspath(cand) != os.path.abspath(src):
+        cand = os.path.join(dest_dir, f"{base} {i}{ext}")
+        i += 1
+    shutil.move(src, cand)
+    return os.path.basename(cand)
+
+
+def save_asset(root, kind, filename, data):
+    if kind not in ASSET_KINDS:
+        raise ValueError("unknown asset kind")
+    name = os.path.basename(filename.replace("\\", "/"))
+    if not name or name.startswith("."):
+        raise ValueError("invalid filename")
+    d = asset_dir(root, kind)
+    os.makedirs(d, exist_ok=True)
+    stem, ext = os.path.splitext(name)
+    dest = os.path.join(d, name)
+    i = 2
+    while os.path.exists(dest):
+        dest = os.path.join(d, f"{stem} {i}{ext}")
+        i += 1
+    with open(dest, "wb") as f:
+        f.write(data)
+    return os.path.basename(dest)
+
+
+def remove_asset(root, kind, name):
+    if kind not in ASSET_KINDS:
+        raise ValueError("unknown asset kind")
+    p = os.path.join(asset_dir(root, kind), os.path.basename(name))
+    if os.path.isfile(p):
+        os.remove(p)
+
+
+# ----------------------------------------------------------------------------
 # HTTP handler
 # ----------------------------------------------------------------------------
 
@@ -416,6 +540,52 @@ class Handler(BaseHTTPRequestHandler):
             data = f.read()
         self._send(200, data, ctype)
 
+    def _query(self):
+        from urllib.parse import parse_qs
+        q = parse_qs(urlparse(self.path).query)
+        return {k: v[0] for k, v in q.items()}
+
+    def _serve_range(self, path, ctype):
+        """Serve a file with HTTP Range support (needed for <video> seeking)."""
+        if not os.path.isfile(path):
+            return self._send(404, {"error": "not found"})
+        size = os.path.getsize(path)
+        start, end, status = 0, size - 1, 200
+        rng = self.headers.get("Range")
+        if rng and rng.startswith("bytes="):
+            try:
+                s, _, e = rng[6:].partition("-")
+                start = int(s) if s else 0
+                end = int(e) if e else size - 1
+                start, end = max(0, start), min(end, size - 1)
+                status = 206 if start <= end else 200
+                if status != 206:
+                    start, end = 0, size - 1
+            except ValueError:
+                start, end, status = 0, size - 1, 200
+        length = end - start + 1
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        if self.command == "HEAD":
+            return
+        with open(path, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                buf = f.read(min(262144, remaining))
+                if not buf:
+                    break
+                try:
+                    self.wfile.write(buf)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                remaining -= len(buf)
+
     # -- routing ----------------------------------------------------------
     def do_GET(self):
         p = urlparse(self.path).path
@@ -442,14 +612,49 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, resp)
         if p == "/api/health":
             return self._send(200, {"ffmpeg": have_tools()})
+        if p == "/api/clip":
+            q = self._query()
+            try:
+                full = safe_join(q["root"], q.get("path", ""))
+            except (KeyError, ValueError):
+                return self._send(400, {"error": "bad path"})
+            return self._serve_range(full, content_type_for(full))
+        if p == "/api/asset-file":
+            q = self._query()
+            try:
+                full = os.path.join(asset_dir(q["root"], q["kind"]), os.path.basename(q["name"]))
+            except (KeyError, ValueError):
+                return self._send(400, {"error": "bad asset"})
+            return self._serve_range(full, content_type_for(full))
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
         p = urlparse(self.path).path
+
+        # asset upload sends raw file bytes, not JSON — handle before reading body
+        if p == "/api/asset-add":
+            return self._handle_asset_add()
+
         body = self._json_body()
         try:
             if p == "/api/choose-folder":
                 return self._send(200, {"path": pick_folder()})
+
+            if p == "/api/folder-state":
+                root = body.get("path", "").strip()
+                if not root or not os.path.isdir(root):
+                    return self._send(400, {"error": "Folder does not exist."})
+                return self._send(200, folder_state(os.path.abspath(root)))
+
+            if p == "/api/assign":
+                root = body["root"]
+                new = assign_clip(root, body["name"], body["line"],
+                                  bool(body.get("unused")), body.get("mark"))
+                return self._send(200, {"assigned": new, "state": folder_state(root)})
+
+            if p == "/api/asset-remove":
+                remove_asset(body["root"], body["kind"], body["name"])
+                return self._send(200, {"assets": list_assets(body["root"])})
 
             if p == "/api/scan":
                 root = body.get("path", "").strip()
@@ -570,6 +775,20 @@ class Handler(BaseHTTPRequestHandler):
             "model": build_model(root),
             "newName": os.path.basename(cand), "oldName": name,
         })
+
+    # -- asset upload (raw bytes) -----------------------------------------
+    def _handle_asset_add(self):
+        q = self._query()
+        root, kind, name = q.get("root"), q.get("kind"), q.get("name")
+        if not root or not os.path.isdir(root) or kind not in ASSET_KINDS or not name:
+            return self._send(400, {"error": "bad asset upload"})
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        data = self.rfile.read(n) if n else b""
+        try:
+            saved = save_asset(root, kind, name, data)
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+        return self._send(200, {"saved": saved, "assets": list_assets(root)})
 
 
 def main():

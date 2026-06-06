@@ -3,38 +3,96 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Clip Organizer</title>
+  <title>Video Organization Assistant</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header id="topbar">
-    <div class="brand">🎬 Clip Organizer</div>
+    <div class="brand">🎬 Video Organizer</div>
     <div class="folder-pick">
       <input id="pathInput" type="text" placeholder="Paste a folder path and press Enter, or use Choose Folder…" spellcheck="false">
       <button id="chooseBtn" class="primary">Choose Folder…</button>
     </div>
     <div class="actions">
-      <button id="packageBtn" disabled>📦 Package Video</button>
+      <span id="phaseTag" class="phase-tag hidden"></span>
+      <button id="packageBtn" class="hidden" disabled>📦 Package Video</button>
     </div>
   </header>
 
   <div id="status" class="status hidden"></div>
 
-  <main id="lines" class="lines">
-    <div class="empty-hint">Choose a folder of clips to begin. Each subfolder becomes a Line.</div>
+  <!-- ============================ STAGE 1: triage ============================ -->
+  <main id="stage1" class="stage hidden">
+    <div class="s1-wrap">
+      <div class="s1-top">
+        <span id="s1Count" class="s1-count"></span>
+        <span id="s1Name" class="s1-name"></span>
+        <span id="s1Dur" class="s1-dur"></span>
+      </div>
+
+      <div class="s1-stage">
+        <video id="s1Video" playsinline controls autoplay loop muted></video>
+        <div id="s1Done" class="s1-done hidden">✅ All clips sorted!</div>
+      </div>
+
+      <div class="s1-controls">
+        <button id="s1Flag" class="s1-flag" title="Mark this clip as unused (F)">⚑ Unused</button>
+        <div class="s1-marks" id="s1Marks">
+          <button data-mark="main" title="Main clip — renames to U USED">★ Main</button>
+          <button data-mark="sub" title="Sub clip — renames to U I USED">SUB</button>
+          <button data-mark="outro" title="Outro — renames to U O USED">Outro</button>
+        </div>
+        <button id="s1Open" class="s1-open" title="Open in default player">Open ↗</button>
+        <button id="s1Skip" class="s1-skip" title="Skip for now (S)">Skip ⏭</button>
+      </div>
+
+      <div class="s1-lines" id="s1Lines"></div>
+
+      <div class="s1-hint">
+        <b>1–9</b> file into a line · <b>+</b> add a line · <b>F</b> flag unused ·
+        <b>M/B/O</b> main/sub/outro · <b>S</b> skip
+      </div>
+    </div>
   </main>
 
-  <footer id="bottombar">
-    <div class="totals">
-      <span class="total-label">Total active video</span>
-      <span id="totalDuration" class="total-time">0:00</span>
-      <span id="clipCount" class="clip-count"></span>
+  <!-- ===================== ASSET PROMPT (post-sort step) ===================== -->
+  <main id="assetPrompt" class="stage hidden">
+    <div class="ap-wrap">
+      <div class="ap-step" id="apStep"></div>
+      <h2 id="apTitle"></h2>
+      <p id="apSub" class="ap-sub"></p>
+      <div id="apDrop" class="ap-drop">
+        <div class="ap-drop-icon">＋</div>
+        <div>Drop files here, or click to choose</div>
+      </div>
+      <div id="apList" class="ap-list"></div>
+      <div class="ap-actions">
+        <button id="apSkip">Skip</button>
+        <button id="apNext" class="primary">Next →</button>
+      </div>
     </div>
-    <div id="timeline" class="timeline"></div>
-  </footer>
+  </main>
+
+  <!-- ========================== STAGE 2: organizer ========================== -->
+  <div id="stage2" class="stage hidden">
+    <section id="assetBar" class="asset-bar"></section>
+    <main id="lines" class="lines">
+      <div class="empty-hint">Choose a folder of clips to begin.</div>
+    </main>
+    <footer id="bottombar">
+      <div class="totals">
+        <span class="total-label">Total active video</span>
+        <span id="totalDuration" class="total-time">0:00</span>
+        <span id="clipCount" class="clip-count"></span>
+      </div>
+      <div id="timeline" class="timeline"></div>
+    </footer>
+  </div>
 
   <div id="tooltip" class="tooltip hidden"></div>
+  <input id="assetFileInput" type="file" multiple hidden>
 
   <script src="/static/app.js"></script>
+  <script src="/static/stage1.js"></script>
 </body>
 </html>

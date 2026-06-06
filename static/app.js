@@ -9,6 +9,7 @@ let pollTimer = null;
 const unusedOpen = {}; // line name -> bool, persisted across re-renders
 const origNames = {};  // clip.key -> original filename, this session only (cleared on reload)
 let painted = false;   // first-paint flag, gates intro animation
+let ASSETS = { thumbnails: [], icons: [] }; // current folder's assets
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls) => { const n = document.createElement(tag); if (cls) n.className = cls; return n; };
@@ -59,17 +60,49 @@ async function chooseFolder() {
 async function load() {
   const path = $("#pathInput").value.trim();
   if (!path) { showStatus("Enter or choose a folder first.", "error"); return; }
-  ROOT = path;
-  painted = false; // replay intro for the new folder
-  Object.keys(origNames).forEach((k) => delete origNames[k]); // fresh session per folder
-  $("#packageBtn").disabled = true;
+  let state;
   try {
-    await api("/api/scan", { path });
+    state = await api("/api/folder-state", { path });
   } catch (e) {
     showStatus("⚠️ " + e.message, "error");
     return;
   }
-  pollScan();
+  ROOT = state.root;
+  ASSETS = state.assets || { thumbnails: [], icons: [] };
+  if (state.phase === 1) startStage1(state);   // defined in stage1.js
+  else enterStage2();
+}
+
+// ---- stage routing --------------------------------------------------------
+function showStage(name) {
+  ["stage1", "assetPrompt", "stage2"].forEach((id) =>
+    $("#" + id).classList.toggle("hidden", id !== name));
+}
+
+function setPhaseTag(n) {
+  const tag = $("#phaseTag");
+  tag.textContent = n === 1 ? "Stage 1 · Sort into lines" : "Stage 2 · Organize";
+  tag.classList.remove("hidden");
+}
+
+async function enterStage2() {
+  showStage("stage2");
+  setPhaseTag(2);
+  $("#packageBtn").classList.remove("hidden");
+  $("#packageBtn").disabled = true;
+  painted = false;
+  Object.keys(origNames).forEach((k) => delete origNames[k]);
+  try {
+    const st = await api("/api/folder-state", { path: ROOT });
+    ASSETS = st.assets;
+  } catch (e) { /* keep whatever we have */ }
+  renderAssetBar();
+  try {
+    await api("/api/scan", { path: ROOT });
+    pollScan();
+  } catch (e) {
+    showStatus("⚠️ " + e.message, "error");
+  }
 }
 
 function pollScan() {
@@ -445,6 +478,94 @@ function pollPackage() {
   }).catch((e) => {
     showStatus("⚠️ " + e.message, "error");
     $("#packageBtn").disabled = false;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Assets (shared by Stage 2 bar and the Stage 1 prompt)
+// ---------------------------------------------------------------------------
+const ASSET_KINDS = [["thumbnails", "Thumbnails"], ["icons", "Icons"]];
+
+function isImageName(name) {
+  return /\.(png|jpe?g|gif|webp|svg|bmp|heic|tiff?|avif)$/i.test(name);
+}
+function assetUrl(kind, name) {
+  return `/api/asset-file?root=${encodeURIComponent(ROOT)}&kind=${kind}&name=${encodeURIComponent(name)}`;
+}
+
+async function uploadAsset(kind, file) {
+  const q = `?root=${encodeURIComponent(ROOT)}&kind=${kind}&name=${encodeURIComponent(file.name)}`;
+  const res = await fetch("/api/asset-add" + q, { method: "POST", body: file });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  ASSETS = data.assets;
+  return data;
+}
+async function uploadAssets(kind, fileList) {
+  for (const f of fileList) {
+    try { await uploadAsset(kind, f); }
+    catch (e) { showStatus("⚠️ " + e.message, "error"); }
+  }
+}
+async function removeAsset(kind, name) {
+  const data = await api("/api/asset-remove", { root: ROOT, kind, name });
+  ASSETS = data.assets;
+}
+function pickAssets(kind, after) {
+  const inp = $("#assetFileInput");
+  inp.value = "";
+  inp.onchange = async () => {
+    if (inp.files.length) { await uploadAssets(kind, inp.files); if (after) after(); }
+  };
+  inp.click();
+}
+
+function assetThumb(kind, name) {
+  const chip = el("div", "asset-chip");
+  if (isImageName(name)) {
+    const img = el("img"); img.src = assetUrl(kind, name); img.alt = name; img.loading = "lazy";
+    chip.appendChild(img);
+  } else {
+    const ext = el("div", "asset-ext");
+    ext.textContent = (name.split(".").pop() || "file").toUpperCase();
+    chip.appendChild(ext);
+  }
+  const cap = el("div", "asset-cap"); cap.textContent = name; cap.title = name;
+  chip.appendChild(cap);
+  return chip;
+}
+
+function renderAssetBar() {
+  const bar = $("#assetBar");
+  bar.innerHTML = "";
+  ASSET_KINDS.forEach(([kind, label]) => {
+    const group = el("div", "asset-group");
+    const head = el("div", "asset-head");
+    head.innerHTML = `<span>${label}</span><span class="asset-n">${(ASSETS[kind] || []).length}</span>`;
+    const items = el("div", "asset-items");
+    (ASSETS[kind] || []).forEach((name) => {
+      const chip = assetThumb(kind, name);
+      const rm = el("button", "asset-rm"); rm.textContent = "×"; rm.title = "Remove";
+      rm.addEventListener("click", async (e) => {
+        e.stopPropagation(); await removeAsset(kind, name); renderAssetBar();
+      });
+      chip.appendChild(rm);
+      items.appendChild(chip);
+    });
+    const add = el("button", "asset-add"); add.textContent = "＋";
+    add.title = "Add " + label.toLowerCase();
+    add.addEventListener("click", () => pickAssets(kind, renderAssetBar));
+    items.appendChild(add);
+
+    group.addEventListener("dragover", (e) => { e.preventDefault(); group.classList.add("drag-over"); });
+    group.addEventListener("dragleave", () => group.classList.remove("drag-over"));
+    group.addEventListener("drop", async (e) => {
+      e.preventDefault(); group.classList.remove("drag-over");
+      if (e.dataTransfer.files.length) { await uploadAssets(kind, e.dataTransfer.files); renderAssetBar(); }
+    });
+
+    group.append(head, items);
+    bar.appendChild(group);
   });
 }
 
