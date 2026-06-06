@@ -10,6 +10,8 @@ const unusedOpen = {}; // line name -> bool, persisted across re-renders
 const origNames = {};  // clip.key -> original filename, this session only (cleared on reload)
 let painted = false;   // first-paint flag, gates intro animation
 let ASSETS = { thumbnails: [], icons: [] }; // current folder's assets
+let scanRendered = false;     // Stage 2 has been rendered for the current scan
+let cardByKey = {};           // clip.key -> card element, for live preview patching
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls) => { const n = document.createElement(tag); if (cls) n.className = cls; return n; };
@@ -91,6 +93,7 @@ async function enterStage2() {
   $("#packageBtn").classList.remove("hidden");
   $("#packageBtn").disabled = true;
   painted = false;
+  scanRendered = false;
   Object.keys(origNames).forEach((k) => delete origNames[k]);
   try {
     const st = await api("/api/folder-state", { path: ROOT });
@@ -108,22 +111,59 @@ async function enterStage2() {
 function pollScan() {
   clearTimeout(pollTimer);
   api("/api/scan-status").then((st) => {
-    if (st.error) { showStatus("⚠️ " + st.error, "error"); return; }
+    if (st.error) { showStatus("⚠️ " + st.error, "error"); }
+    if (st.model) {
+      if (!scanRendered) {
+        // open Stage 2 immediately with all clips (previews fill in below)
+        MODEL = st.model; ROOT = st.model.root;
+        $("#packageBtn").disabled = false;
+        render();
+        scanRendered = true;
+      } else {
+        applyScanUpdate(st.model);  // patch durations + thumbnails as they land
+      }
+    }
     if (st.running) {
       const pct = st.total ? Math.round((st.done / st.total) * 100) : 0;
       showStatus(
         `Generating previews… ${st.done}/${st.total}` +
         `<span class="progress"><i style="width:${pct}%"></i></span>`);
-      pollTimer = setTimeout(pollScan, 350);
-    } else if (st.model) {
-      MODEL = st.model; ROOT = st.model.root;
+      pollTimer = setTimeout(pollScan, 600);
+    } else {
       hideStatus();
       $("#packageBtn").disabled = false;
-      render();
-    } else {
-      pollTimer = setTimeout(pollScan, 350);
     }
   }).catch((e) => showStatus("⚠️ " + e.message, "error"));
+}
+
+// Patch already-rendered cards as their previews/durations become available,
+// without rebuilding the DOM (preserves hover, menus, scroll).
+function applyScanUpdate(model) {
+  MODEL = model;
+  model.lines.forEach((ln) => {
+    ln.clips.forEach((c) => {
+      const card = cardByKey[c.key];
+      if (card && c.ready && card.dataset.ready !== "1") markCardReady(card, c);
+    });
+    const box = $(`.line-box[data-line="${CSS.escape(ln.name)}"]`);
+    if (box) {
+      const d = box.querySelector(".line-dur");
+      if (d) d.textContent = fmt(ln.activeDuration);
+    }
+  });
+  renderTimeline();
+}
+
+function markCardReady(card, c) {
+  card.dataset.ready = "1";
+  card.classList.remove("loading");
+  const film = card.querySelector(".film");
+  if (film) {
+    film.style.backgroundImage = `url(/thumb/${c.key}.jpg)`;
+    film.style.backgroundSize = `${c.n * 100}% 100%`;
+  }
+  const t = card.querySelector(".badge .t");
+  if (t) t.textContent = fmt(c.duration);
 }
 
 function applyModel(data) {
@@ -136,6 +176,7 @@ function applyModel(data) {
 function render() {
   const wrap = $("#lines");
   wrap.innerHTML = "";
+  cardByKey = {};
   if (!MODEL || !MODEL.lines.length) {
     const e = el("div", "empty-hint");
     e.textContent = "No line subfolders found in this folder.";
@@ -196,20 +237,25 @@ function renderLine(line, idx, intro) {
 }
 
 function renderClip(c, lineIdx) {
-  const card = el("div", "clip" + (c.active ? "" : " inactive"));
+  const ready = c.ready !== false; // older models without the flag are treated as ready
+  const card = el("div", "clip" + (c.active ? "" : " inactive") + (ready ? "" : " loading"));
   card.draggable = true;
   card.dataset.name = c.name;
+  card.dataset.ready = ready ? "1" : "0";
+  cardByKey[c.key] = card;
 
   const film = el("div", "film");
-  film.style.backgroundImage = `url(/thumb/${c.key}.jpg)`;
-  film.style.backgroundSize = `${c.n * 100}% 100%`;
+  if (ready) {
+    film.style.backgroundImage = `url(/thumb/${c.key}.jpg)`;
+    film.style.backgroundSize = `${c.n * 100}% 100%`;
+  }
   card.appendChild(film);
 
   const badge = el("div", "badge");
   const glyph = { main: '<span class="mk mk-main">★</span>',
                   sub: '<span class="mk mk-sub">SUB</span>',
                   outro: '<span class="mk mk-outro">OUTRO</span>' }[c.mark] || "";
-  badge.innerHTML = glyph + `<span>${fmt(c.duration)}</span>`;
+  badge.innerHTML = glyph + `<span class="t">${ready ? fmt(c.duration) : "…"}</span>`;
   const name = el("div", "name"); name.textContent = c.name;
   const dot = el("div", "scrub-dot");
   card.append(badge, name, dot);
@@ -225,8 +271,9 @@ function renderClip(c, lineIdx) {
   menuBtn.addEventListener("dblclick", (e) => e.stopPropagation());
   card.appendChild(menuBtn);
 
-  // hover scrub through filmstrip frames
+  // hover scrub through filmstrip frames (only once the preview is ready)
   card.addEventListener("mousemove", (e) => {
+    if (card.dataset.ready !== "1") return;
     const r = card.getBoundingClientRect();
     const f = Math.min(0.9999, Math.max(0, (e.clientX - r.left) / r.width));
     const i = Math.floor(f * c.n);
@@ -234,7 +281,7 @@ function renderClip(c, lineIdx) {
     card.classList.add("scrubbing");
     dot.style.left = (f * 100) + "%";
     dot.style.width = "2px";
-    showTip(e, `<b>${c.name}</b><br>${fmt(c.duration)} · ${c.active ? "active" : "unused"}`);
+    showTip(e, `<b>${c.name}</b><br>${card.querySelector(".badge .t").textContent} · ${c.active ? "active" : "unused"}`);
   });
   card.addEventListener("mouseleave", () => {
     film.style.backgroundPositionX = "0%";

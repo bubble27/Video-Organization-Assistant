@@ -133,6 +133,16 @@ button.primary:hover:not(:disabled) { background: #6cb3ff; }
 .clip.inactive { opacity: .45; filter: grayscale(.55); }
 .clip.inactive:hover { opacity: .8; }
 
+/* preview not generated yet — animated placeholder */
+.clip.loading .film {
+  background-image: linear-gradient(100deg, #12161d 30%, #1b212b 50%, #12161d 70%);
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: shimmer 1.3s linear infinite;
+}
+.clip.loading .badge .t { color: var(--muted); }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
 .clip .badge {
   position: absolute; top: 6px; left: 6px;
   display: flex; align-items: center; gap: 4px;

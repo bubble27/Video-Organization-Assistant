@@ -19,7 +19,6 @@ import zipfile
 import threading
 import subprocess
 import webbrowser
-from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, unquote
 
@@ -113,33 +112,47 @@ def ensure_sprite(path):
             pass
 
     duration = probe_duration(path)
-    tmpdir = os.path.join(CACHE_DIR, "_tmp_" + key)
-    os.makedirs(tmpdir, exist_ok=True)
-    vf = (f"scale={FRAME_W}:{FRAME_H}:force_original_aspect_ratio=decrease,"
-          f"pad={FRAME_W}:{FRAME_H}:(ow-iw)/2:(oh-ih)/2:black")
+    pad = (f"scale={FRAME_W}:{FRAME_H}:force_original_aspect_ratio=decrease,"
+           f"pad={FRAME_W}:{FRAME_H}:(ow-iw)/2:(oh-ih)/2:black")
 
-    made = 0
-    for i in range(N_FRAMES):
-        t = (duration * i / (N_FRAMES - 1)) if duration > 0 and N_FRAMES > 1 else 0.0
-        out = os.path.join(tmpdir, f"{i}.jpg")
-        rc, _, _ = _run([
-            "ffmpeg", "-y", "-ss", f"{t:.3f}", "-i", path,
-            "-frames:v", "1", "-vf", vf, "-q:v", "5", out,
-        ])
-        if rc == 0 and os.path.exists(out):
-            made += 1
-        else:
-            # fall back to a black frame so the sprite stays uniform
-            _run(["ffmpeg", "-y", "-f", "lavfi", "-i",
-                  f"color=c=black:s={FRAME_W}x{FRAME_H}", "-frames:v", "1", out])
+    # Single pass: open the file ONCE, walk it sequentially, sample N frames and
+    # tile them. Far fewer file opens / no random seeks than per-frame -ss (which
+    # matters enormously on slow or external USB drives), and -hwaccel lets the
+    # GPU decode HEVC (VideoToolbox on macOS) so the full decode stays fast.
+    tmp = sp + ".tmp.jpg"
+    full = f"{pad},tile={N_FRAMES}x1"
+    # GPU decode helps where it's reliable (VideoToolbox on macOS); on Windows
+    # -hwaccel auto tends to fall back to software and just adds overhead.
+    hw = ["-hwaccel", "videotoolbox"] if sys.platform == "darwin" else []
+    attempts = []
+    if duration and duration > 0:
+        vf = f"fps={N_FRAMES}/{duration:.6f},{full}"
+        if hw:
+            attempts.append(["ffmpeg", "-y", *hw, "-an", "-i", path,
+                             "-vf", vf, "-frames:v", "1", "-q:v", "5", tmp])
+        attempts.append(["ffmpeg", "-y", "-an", "-i", path,
+                         "-vf", vf, "-frames:v", "1", "-q:v", "5", tmp])  # software
+    # first-frame only (duration unknown / odd file)
+    attempts.append(["ffmpeg", "-y", "-an", "-i", path,
+                     "-vf", full, "-frames:v", "1", "-q:v", "5", tmp])
+    # last resort: a black sprite so the card resolves instead of hanging
+    attempts.append(["ffmpeg", "-y", "-f", "lavfi", "-i",
+                     f"color=c=black:s={FRAME_W * N_FRAMES}x{FRAME_H}",
+                     "-frames:v", "1", "-q:v", "5", tmp])
 
-    # tile frames horizontally into one sprite
-    _run([
-        "ffmpeg", "-y", "-framerate", "1", "-start_number", "0",
-        "-i", os.path.join(tmpdir, "%d.jpg"),
-        "-frames:v", "1", "-vf", f"tile={N_FRAMES}x1", "-q:v", "5", sp,
-    ])
-    shutil.rmtree(tmpdir, ignore_errors=True)
+    ok = False
+    for cmd in attempts:
+        rc, _, _ = _run(cmd)
+        if rc == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+            ok = True
+            break
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+    if ok:
+        os.replace(tmp, sp)
 
     meta = {"key": key, "duration": duration, "n": N_FRAMES,
             "frameW": FRAME_W, "frameH": FRAME_H}
@@ -246,8 +259,24 @@ def gather_all_clip_paths(root):
     return paths
 
 
+def read_clip_meta(path):
+    """Read a clip's cached duration + sprite-readiness WITHOUT generating
+    anything (so the model can be returned instantly; sprites fill in later)."""
+    key = clip_key(path)
+    mp, sp = meta_path(key), sprite_path(key)
+    if os.path.exists(mp) and os.path.exists(sp):
+        try:
+            with open(mp, "r", encoding="utf-8") as f:
+                m = json.load(f)
+            return key, float(m.get("duration", 0.0)), int(m.get("n", N_FRAMES)), True
+        except (OSError, ValueError):
+            pass
+    return key, 0.0, N_FRAMES, False
+
+
 def build_model(root):
-    """Read disk state and build the JSON model the frontend renders."""
+    """Read disk state and build the JSON model the frontend renders. Does NOT
+    generate previews — `ready` says whether each clip's filmstrip exists yet."""
     lines = []
     total_active = 0.0
     for line in sorted(os.listdir(root)):
@@ -261,12 +290,11 @@ def build_model(root):
         def add(name, folder, active):
             nonlocal active_dur
             path = os.path.join(folder, name)
-            meta = ensure_sprite(path)
-            dur = meta.get("duration", 0.0)
+            key, dur, n, ready = read_clip_meta(path)
             clips.append({
-                "name": name, "key": meta["key"], "line": line,
-                "active": active, "duration": dur, "n": meta["n"],
-                "mark": mark_of(name),
+                "name": name, "key": key, "line": line,
+                "active": active, "duration": dur, "n": n,
+                "mark": mark_of(name), "ready": ready,
             })
             if active:
                 active_dur += dur
@@ -295,29 +323,36 @@ def clip_disk_path(root, line, name, active):
 # ----------------------------------------------------------------------------
 
 def start_scan(root):
+    """Kick off preview generation in the background, ONE CLIP AT A TIME, so the
+    UI can open immediately and previews fill in progressively. Sequential is
+    also far gentler on slow/external drives than hammering them in parallel."""
     with JOB_LOCK:
         if JOB["running"]:
             return False
         paths = gather_all_clip_paths(root)
-        JOB.update(running=True, total=len(paths), done=0,
+        # already-cached clips count as done up front
+        done = sum(1 for p in paths
+                   if os.path.exists(sprite_path(clip_key(p)))
+                   and os.path.exists(meta_path(clip_key(p))))
+        JOB.update(running=True, total=len(paths), done=done,
                    model=None, error=None, root=root)
 
     def worker():
         try:
-            def one(p):
-                ensure_sprite(p)
-                with JOB_LOCK:
-                    JOB["done"] += 1
-            workers = max(2, (os.cpu_count() or 4))
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                list(ex.map(one, paths))
-            model = build_model(root)
-            with JOB_LOCK:
-                JOB["model"] = model
-                JOB["running"] = False
+            for p in paths:
+                key = clip_key(p)
+                if not (os.path.exists(sprite_path(key)) and os.path.exists(meta_path(key))):
+                    try:
+                        ensure_sprite(p)
+                    except Exception:  # noqa: BLE001 — a bad/locked file shouldn't stop the rest
+                        pass
+                    with JOB_LOCK:
+                        JOB["done"] += 1
         except Exception as e:  # noqa: BLE001
             with JOB_LOCK:
                 JOB["error"] = str(e)
+        finally:
+            with JOB_LOCK:
                 JOB["running"] = False
 
     threading.Thread(target=worker, daemon=True).start()
@@ -676,10 +711,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_file(sprite_path(key), "image/jpeg")
         if p == "/api/scan-status":
             with JOB_LOCK:
-                resp = {"running": JOB["running"], "total": JOB["total"],
-                        "done": JOB["done"], "error": JOB["error"],
-                        "model": JOB["model"] if not JOB["running"] else None}
-            return self._send(200, resp)
+                running, total, done = JOB["running"], JOB["total"], JOB["done"]
+                error, root = JOB["error"], JOB["root"]
+            # build_model is now instant (no generation) — return fresh durations
+            # and per-clip readiness every poll so the UI can fill in live
+            model = build_model(root) if root and os.path.isdir(root) else None
+            return self._send(200, {"running": running, "total": total,
+                                    "done": done, "error": error, "model": model})
         if p == "/api/package-status":
             with PKG_LOCK:
                 resp = dict(PKG)
