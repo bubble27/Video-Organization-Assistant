@@ -77,7 +77,7 @@ No Python packages to install — the backend is pure standard library.
 
 ## Install on macOS (easiest)
 
-1. Download **`Auto-Video-Organizer-macOS.zip`** from the
+1. Download **`Video-Organization-Assistant-macOS.zip`** from the
    [latest release](https://github.com/bubble27/Video-Organization-Assistant/releases/latest)
    and unzip it anywhere (e.g. your Applications or Desktop).
 2. If you don't already have ffmpeg, double-click **`Install ffmpeg.command`**
