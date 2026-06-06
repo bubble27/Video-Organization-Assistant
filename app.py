@@ -599,10 +599,16 @@ class Handler(BaseHTTPRequestHandler):
         return {k: v[0] for k, v in q.items()}
 
     def _serve_range(self, path, ctype):
-        """Serve a file with HTTP Range support (needed for <video> seeking)."""
-        if not os.path.isfile(path):
-            return self._send(404, {"error": "not found"})
-        size = os.path.getsize(path)
+        """Serve a file with HTTP Range support (needed for <video> seeking).
+        Tolerant of files that vanish or live on flaky external drives
+        (e.g. a USB drive that drops out mid-read → OSError)."""
+        try:
+            size = os.path.getsize(path)
+            fh = open(path, "rb")
+        except OSError:
+            # missing, moved, or the drive went away before we sent any headers
+            return self._send(404, {"error": "not available"})
+
         start, end, status = 0, size - 1, 200
         rng = self.headers.get("Range")
         if rng and rng.startswith("bytes="):
@@ -617,30 +623,45 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 start, end, status = 0, size - 1, 200
         length = end - start + 1
-        self.send_response(status)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(length))
-        if status == 206:
-            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        self.end_headers()
-        if self.command == "HEAD":
-            return
-        with open(path, "rb") as f:
-            f.seek(start)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(length))
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            fh.seek(start)
             remaining = length
             while remaining > 0:
-                buf = f.read(min(262144, remaining))
+                try:
+                    buf = fh.read(min(262144, remaining))
+                except OSError:
+                    break  # drive hiccup mid-stream — stop quietly
                 if not buf:
                     break
-                try:
-                    self.wfile.write(buf)
-                except (BrokenPipeError, ConnectionResetError):
-                    return
+                self.wfile.write(buf)
                 remaining -= len(buf)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return  # client went away or socket error — nothing more to do
+        finally:
+            fh.close()
 
     # -- routing ----------------------------------------------------------
     def do_GET(self):
+        try:
+            self._get()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client aborted (e.g. <video> cancelled a range request)
+        except Exception as e:  # noqa: BLE001 — never crash a request thread
+            try:
+                self._send(500, {"error": str(e)})
+            except Exception:
+                pass
+
+    def _get(self):
         p = urlparse(self.path).path
         if p in ("/", "/index.html"):
             return self._serve_file(os.path.join(STATIC_DIR, "index.html"), "text/html; charset=utf-8")
