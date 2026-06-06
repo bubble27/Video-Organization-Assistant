@@ -33,6 +33,9 @@ CACHE_DIR = os.path.join(HERE, ".thumbcache")     # kept OUT of the video folder
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 UNUSED_NAME = "Unused"
+ASSETS_DIR = "Assets"            # holds Thumbnails/ and Icons/, never a line
+ASSET_KINDS = {"thumbnails": "Thumbnails", "icons": "Icons"}
+RESERVED_DIRS = {UNUSED_NAME, ASSETS_DIR}
 N_FRAMES = 10           # frames per filmstrip
 FRAME_W, FRAME_H = 160, 120
 VIDEO_EXTS = {".mov", ".mp4", ".m4v", ".avi", ".mkv"}
@@ -233,7 +236,7 @@ def gather_all_clip_paths(root):
     paths = []
     for line in sorted(os.listdir(root)):
         ldir = os.path.join(root, line)
-        if not os.path.isdir(ldir) or line == UNUSED_NAME:
+        if not os.path.isdir(ldir) or line in RESERVED_DIRS:
             continue
         for n in list_clips_in(ldir):
             paths.append(os.path.join(ldir, n))
@@ -249,7 +252,7 @@ def build_model(root):
     total_active = 0.0
     for line in sorted(os.listdir(root)):
         ldir = os.path.join(root, line)
-        if not os.path.isdir(ldir) or line == UNUSED_NAME:
+        if not os.path.isdir(ldir) or line in RESERVED_DIRS:
             continue
 
         clips = []
@@ -421,9 +424,6 @@ def open_in_viewer(path):
 # ----------------------------------------------------------------------------
 # Stage 1 (triage) + assets
 # ----------------------------------------------------------------------------
-
-ASSETS_DIR = "Assets"
-ASSET_KINDS = {"thumbnails": "Thumbnails", "icons": "Icons"}
 
 CONTENT_TYPES = {
     ".mov": "video/quicktime", ".mp4": "video/mp4", ".m4v": "video/x-m4v",
