@@ -103,17 +103,48 @@ The app serves at `http://127.0.0.1:8765/` and opens your browser.
 
 ### Folder layout it expects
 
+Pick a **parent folder**. Each **immediate subfolder** inside it becomes one
+**Line**. The clips go directly inside those subfolders.
+
 ```
-My Project/
-├── L1/                 → "Line 1"
+My Project/              ← the folder you choose in the app
+├── L1/                  → shown as "Line 1"
 │   ├── IMG_0001.MOV
 │   ├── IMG_0002.MOV
-│   └── Unused/         (created automatically for removed clips)
-├── L2/                 → "Line 2"
+│   └── Unused/          (created automatically for removed clips)
+├── L2/                  → shown as "Line 2"
 │   └── ...
-└── L3/
+└── L3/                  → shown as "Line 3"
     └── ...
 ```
+
+### Naming rules
+
+**Line folders** — name them so the app can number them:
+
+- A folder name with **letters + a number** is shown as **"Line N"**, where N is
+  the number. So `L1`, `L 1`, `Line 1`, and `Set 1` all display as **"Line 1"**.
+- A folder name with **no number** (e.g. `Intro`, `B-Roll`) is shown **verbatim**,
+  using the folder name as-is.
+- Numbers control only the *label*, not the order — folders are listed
+  alphabetically. Use zero-padding (`L01`, `L02`, … `L10`) if you have 10+ lines
+  and want them in the right order.
+
+**Reserved folder name** — `Unused` (case-sensitive). Inside any line, a
+subfolder literally named `Unused` holds removed clips and is **not** treated as
+its own line. You normally don't create this yourself; the app makes it when you
+remove a clip.
+
+**Clip files** — must be a video: `.mov`, `.mp4`, `.m4v`, `.avi`, or `.mkv`
+(case-insensitive). The app **ignores**:
+
+- macOS junk: `._*` (AppleDouble) files and `.DS_Store`
+- anything starting with a dot (`.`)
+- non-video files (audio, images, sidecars, etc.)
+
+**Reserved clip names** — the ⋯ marking feature renames files to `U USED` (main),
+`U I USED` (sub), and `U O USED` (outro). Avoid naming your own clips these unless
+you mean to mark them, since the app reads the mark back from the filename.
 
 ---
 
