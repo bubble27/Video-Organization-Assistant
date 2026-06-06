@@ -205,12 +205,17 @@ you mean to mark them, since the app reads the mark back from the filename.
 
 ## Notes
 
-- **Previews use filmstrips, not video playback**, because iPhone `.MOV` is
-  HEVC/H.265 which most browsers can't decode. ffmpeg extracts ~10 frames per
+- **Stage 2 previews use filmstrips, not video playback**, because iPhone `.MOV`
+  is HEVC/H.265 which most browsers can't decode. ffmpeg extracts ~10 frames per
   clip into a sprite; hovering scrubs through them.
-- **Thumbnail cache** lives in a hidden `.thumbcache/` next to `app.py`, keyed by
-  filename + size (so moving/marking a clip doesn't regenerate it). Safe to
-  delete anytime.
+- **Stage 1 plays the raw clip** where the browser supports it (Safari / macOS).
+  On Chrome or Windows — which can't decode HEVC `.MOV` — it automatically falls
+  back to a **low-res H.264 preview** that ffmpeg transcodes on demand (≈5 s the
+  first time, cached after; the next clip is prefetched while you review). A
+  "Building preview…" spinner shows during that one-time transcode.
+- **Caches** live in a hidden `.thumbcache/` next to `app.py` — filmstrips keyed
+  by filename + size, plus the Stage 1 `*.preview.mp4` files. Safe to delete
+  anytime.
 - **Large packages on Windows:** a zip over 4 GB needs ZIP64, which Windows'
   built-in "Compressed Folders" viewer can't open ("access is denied"). Use
   7-Zip or PowerShell `Expand-Archive`. macOS opens them fine.

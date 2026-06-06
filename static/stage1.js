@@ -3,13 +3,27 @@
 // Depends on globals from app.js: $, el, api, fmt, ROOT, ASSETS, showStage,
 // setPhaseTag, enterStage2, uploadAssets, assetThumb, removeAsset.
 
-const S1 = { clips: [], idx: 0, lines: [1], unused: false, mark: null, busy: false };
+const S1 = {
+  clips: [], idx: 0, lines: [1], unused: false, mark: null, busy: false,
+  needsPreview: false, // browser can't play raw HEVC .MOV → use transcoded preview
+  mode: "raw",         // "raw" | "preview" for the clip currently loaded
+};
+
+function rawUrl(name) {
+  return `/api/clip?root=${encodeURIComponent(ROOT)}&path=${encodeURIComponent(name)}`;
+}
+function previewUrl(name) {
+  return `/api/preview?root=${encodeURIComponent(ROOT)}&path=${encodeURIComponent(name)}`;
+}
 
 function startStage1(state) {
   showStage("stage1");
   setPhaseTag(1);
   $("#packageBtn").classList.add("hidden");
   hideStatus();
+  // If the browser can't play the QuickTime/HEVC container (Chrome, Windows),
+  // skip straight to the transcoded preview.
+  S1.needsPreview = !$("#s1Video").canPlayType("video/quicktime");
   S1.clips = state.loose.slice();
   S1.lines = state.lines && state.lines.length ? state.lines.slice() : [1];
   S1.idx = 0;
@@ -20,6 +34,8 @@ function startStage1(state) {
 }
 
 function s1Current() { return S1.clips[S1.idx]; }
+
+function setLoading(on) { $("#s1Loading").classList.toggle("hidden", !on); }
 
 function showCurrent() {
   const vid = $("#s1Video");
@@ -35,17 +51,49 @@ function showCurrent() {
   $("#s1Count").textContent = `Clip ${S1.idx + 1} of ${S1.clips.length}`;
   $("#s1Name").textContent = name;
   $("#s1Dur").textContent = "";
-  vid.src = `/api/clip?root=${encodeURIComponent(ROOT)}&path=${encodeURIComponent(name)}`;
+
+  if (S1.needsPreview) {
+    S1.mode = "preview";
+    setLoading(true);                 // transcode may take a few seconds
+    vid.src = previewUrl(name);
+  } else {
+    S1.mode = "raw";
+    setLoading(false);
+    vid.src = rawUrl(name);
+  }
   vid.load();
   const play = vid.play();
   if (play && play.catch) play.catch(() => {});
+  prefetchNextPreview();
 }
 
-$("#s1Video").addEventListener("loadedmetadata", function () {
+// Warm the next clip's transcoded preview so it's ready when we get there.
+function prefetchNextPreview() {
+  if (!S1.needsPreview) return;
+  const next = S1.clips[S1.idx + 1];
+  if (!next) return;
+  fetch(previewUrl(next), { headers: { Range: "bytes=0-1" } }).catch(() => {});
+}
+
+const s1vid = $("#s1Video");
+s1vid.addEventListener("loadedmetadata", function () {
   if (isFinite(this.duration)) $("#s1Dur").textContent = fmt(this.duration);
 });
-$("#s1Video").addEventListener("error", function () {
-  $("#s1Dur").textContent = "(can't preview HEVC here — use Open ↗ / Safari on Mac)";
+s1vid.addEventListener("loadeddata", () => setLoading(false));
+s1vid.addEventListener("playing", () => setLoading(false));
+s1vid.addEventListener("error", function () {
+  if (S1.mode === "raw") {
+    // raw HEVC failed in this browser → fall back to the transcoded preview
+    S1.needsPreview = true;
+    S1.mode = "preview";
+    setLoading(true);
+    const name = s1Current();
+    if (name) { this.src = previewUrl(name); this.load(); this.play().catch(() => {}); }
+    prefetchNextPreview();
+  } else {
+    setLoading(false);
+    $("#s1Dur").textContent = "(preview unavailable — try Open ↗)";
+  }
 });
 
 // ---- modifiers (flag + marks) --------------------------------------------

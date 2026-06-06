@@ -302,6 +302,16 @@ button.primary:hover:not(:disabled) { background: #6cb3ff; }
 }
 #s1Video { width: 100%; height: 100%; object-fit: contain; background: #000; }
 .s1-done { font-size: 22px; font-weight: 700; color: var(--good); }
+.s1-loading {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  gap: 10px; background: rgba(8,10,14,.72); color: var(--muted); font-size: 14px;
+}
+.s1-loading .spin {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .s1-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .s1-flag.active {

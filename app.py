@@ -145,6 +145,46 @@ def ensure_sprite(path):
     return meta
 
 
+# A low-res H.264 preview used when the browser can't play the raw HEVC .MOV
+# (Chrome / Windows). Generated lazily and cached next to the thumbnails.
+_PREVIEW_LOCKS = {}
+_PREVIEW_GUARD = threading.Lock()
+
+
+def preview_path(key):
+    return os.path.join(CACHE_DIR, key + ".preview.mp4")
+
+
+def ensure_preview(src):
+    """Transcode `src` to a small, broadly-playable mp4 (cached). Returns path or None."""
+    key = clip_key(src)
+    out = preview_path(key)
+    if os.path.exists(out) and os.path.getsize(out) > 0:
+        return out
+    with _PREVIEW_GUARD:
+        lock = _PREVIEW_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        if os.path.exists(out) and os.path.getsize(out) > 0:
+            return out
+        tmp = out + ".tmp.mp4"
+        rc, _, _ = _run([
+            "ffmpeg", "-y", "-i", src,
+            "-vf", "scale=-2:480",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+            "-c:a", "aac", "-b:a", "96k",
+            "-movflags", "+faststart", "-threads", "0", tmp,
+        ])
+        if rc == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+            os.replace(tmp, out)
+            return out
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return None
+
+
 # ----------------------------------------------------------------------------
 # Folder scanning / model
 # ----------------------------------------------------------------------------
@@ -619,6 +659,16 @@ class Handler(BaseHTTPRequestHandler):
             except (KeyError, ValueError):
                 return self._send(400, {"error": "bad path"})
             return self._serve_range(full, content_type_for(full))
+        if p == "/api/preview":
+            q = self._query()
+            try:
+                full = safe_join(q["root"], q.get("path", ""))
+            except (KeyError, ValueError):
+                return self._send(400, {"error": "bad path"})
+            out = ensure_preview(full)
+            if not out:
+                return self._send(500, {"error": "preview generation failed"})
+            return self._serve_range(out, "video/mp4")
         if p == "/api/asset-file":
             q = self._query()
             try:
