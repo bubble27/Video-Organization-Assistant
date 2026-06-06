@@ -329,11 +329,24 @@ def start_scan(root):
 # ----------------------------------------------------------------------------
 
 def pick_folder():
+    prompt = "Choose the folder of clips to organize"
+    # macOS: use a native AppleScript dialog (no Tk dependency, always available)
+    if sys.platform == "darwin":
+        script = (
+            'try\n'
+            f'  POSIX path of (choose folder with prompt "{prompt}")\n'
+            'on error\n'
+            '  return ""\n'
+            'end try\n'
+        )
+        rc, out, _ = _run(["osascript", "-e", script])
+        return out.strip().rstrip("/") if rc == 0 else ""
+    # Windows / Linux: Tk file dialog in a subprocess
     code = (
         "import tkinter as tk\n"
         "from tkinter import filedialog\n"
         "r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True)\n"
-        "p = filedialog.askdirectory(title='Choose the folder of clips to organize')\n"
+        f"p = filedialog.askdirectory(title='{prompt}')\n"
         "print(p or '')\n"
     )
     rc, out, _ = _run([sys.executable, "-c", code])

@@ -5,8 +5,9 @@
 
 const S1 = {
   clips: [], idx: 0, lines: [1], unused: false, mark: null, busy: false,
-  needsPreview: false, // browser can't play raw HEVC .MOV → use transcoded preview
-  mode: "raw",         // "raw" | "preview" for the clip currently loaded
+  preferPreview: false, // set once we learn this browser can't play raw HEVC
+  mode: "raw",          // "raw" | "preview" for the clip currently loaded
+  rawTimer: null,       // stall watchdog while a raw clip tries to load
 };
 
 function rawUrl(name) {
@@ -21,9 +22,7 @@ function startStage1(state) {
   setPhaseTag(1);
   $("#packageBtn").classList.add("hidden");
   hideStatus();
-  // If the browser can't play the QuickTime/HEVC container (Chrome, Windows),
-  // skip straight to the transcoded preview.
-  S1.needsPreview = !$("#s1Video").canPlayType("video/quicktime");
+  S1.preferPreview = false; // start optimistic; we try the raw clip first
   S1.clips = state.loose.slice();
   S1.lines = state.lines && state.lines.length ? state.lines.slice() : [1];
   S1.idx = 0;
@@ -51,25 +50,53 @@ function showCurrent() {
   $("#s1Count").textContent = `Clip ${S1.idx + 1} of ${S1.clips.length}`;
   $("#s1Name").textContent = name;
   $("#s1Dur").textContent = "";
+  clearRawTimer();
 
-  if (S1.needsPreview) {
-    S1.mode = "preview";
-    setLoading(true);                 // transcode may take a few seconds
-    vid.src = previewUrl(name);
+  if (S1.preferPreview) {
+    loadPreview(name);
   } else {
+    // Try the real clip first (plays instantly in Safari / on macOS).
     S1.mode = "raw";
     setLoading(false);
     vid.src = rawUrl(name);
+    vid.load();
+    playVid(vid);
+    // Watchdog: if the raw clip neither plays nor errors, fall back.
+    S1.rawTimer = setTimeout(() => {
+      if (S1.mode === "raw" && vid.readyState < 2) fallbackToPreview();
+    }, 3500);
   }
-  vid.load();
-  const play = vid.play();
-  if (play && play.catch) play.catch(() => {});
   prefetchNextPreview();
+}
+
+function loadPreview(name) {
+  const vid = $("#s1Video");
+  S1.mode = "preview";
+  clearRawTimer();
+  setLoading(true);              // transcode may take a few seconds
+  vid.src = previewUrl(name);
+  vid.load();
+  playVid(vid);
+}
+
+function fallbackToPreview() {
+  S1.preferPreview = true;       // remember for the rest of this session
+  const name = s1Current();
+  if (name) loadPreview(name);
+  prefetchNextPreview();
+}
+
+function playVid(vid) {
+  const p = vid.play();
+  if (p && p.catch) p.catch(() => {});
+}
+function clearRawTimer() {
+  if (S1.rawTimer) { clearTimeout(S1.rawTimer); S1.rawTimer = null; }
 }
 
 // Warm the next clip's transcoded preview so it's ready when we get there.
 function prefetchNextPreview() {
-  if (!S1.needsPreview) return;
+  if (!S1.preferPreview) return;
   const next = S1.clips[S1.idx + 1];
   if (!next) return;
   fetch(previewUrl(next), { headers: { Range: "bytes=0-1" } }).catch(() => {});
@@ -79,21 +106,16 @@ const s1vid = $("#s1Video");
 s1vid.addEventListener("loadedmetadata", function () {
   if (isFinite(this.duration)) $("#s1Dur").textContent = fmt(this.duration);
 });
-s1vid.addEventListener("loadeddata", () => setLoading(false));
-s1vid.addEventListener("playing", () => setLoading(false));
+s1vid.addEventListener("loadeddata", () => { clearRawTimer(); setLoading(false); });
+s1vid.addEventListener("playing", () => { clearRawTimer(); setLoading(false); });
 s1vid.addEventListener("error", function () {
   if (S1.mode === "raw") {
-    // raw HEVC failed in this browser → fall back to the transcoded preview
-    S1.needsPreview = true;
-    S1.mode = "preview";
-    setLoading(true);
-    const name = s1Current();
-    if (name) { this.src = previewUrl(name); this.load(); this.play().catch(() => {}); }
-    prefetchNextPreview();
-  } else {
+    fallbackToPreview();         // raw couldn't decode → transcoded preview
+  } else if (S1.mode === "preview") {
     setLoading(false);
     $("#s1Dur").textContent = "(preview unavailable — try Open ↗)";
   }
+  // mode "idle": source was cleared on purpose → ignore
 });
 
 // ---- modifiers (flag + marks) --------------------------------------------
@@ -152,6 +174,7 @@ async function assignTo(n) {
 
   // stop the player so the file isn't being range-requested while it moves
   const vid = $("#s1Video");
+  S1.mode = "idle"; clearRawTimer();   // ignore the error fired by clearing src
   vid.pause(); vid.removeAttribute("src"); vid.load();
 
   try {
@@ -194,6 +217,7 @@ document.addEventListener("keydown", (e) => {
 // ---- finish → asset prompts → Stage 2 ------------------------------------
 function finishStage1() {
   const vid = $("#s1Video");
+  S1.mode = "idle"; clearRawTimer();
   vid.pause(); vid.removeAttribute("src"); vid.load();
   vid.classList.add("hidden");
   $("#s1Count").textContent = "";
