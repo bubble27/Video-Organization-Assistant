@@ -1,4 +1,4 @@
-# Auto Video Organizer
+# Video Organization Assistant
 
 A local app for sorting and trimming folders of video clips before you edit or
 deliver them. Point it at a folder whose subfolders are "lines" (e.g. `L1`, `L2`,
