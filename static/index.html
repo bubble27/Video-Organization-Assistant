@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clip Organizer</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">🎬 Clip Organizer</div>
+    <div class="folder-pick">
+      <input id="pathInput" type="text" placeholder="Paste a folder path and press Enter, or use Choose Folder…" spellcheck="false">
+      <button id="chooseBtn" class="primary">Choose Folder…</button>
+    </div>
+    <div class="actions">
+      <button id="packageBtn" disabled>📦 Package Video</button>
+    </div>
+  </header>
+
+  <div id="status" class="status hidden"></div>
+
+  <main id="lines" class="lines">
+    <div class="empty-hint">Choose a folder of clips to begin. Each subfolder becomes a Line.</div>
+  </main>
+
+  <footer id="bottombar">
+    <div class="totals">
+      <span class="total-label">Total active video</span>
+      <span id="totalDuration" class="total-time">0:00</span>
+      <span id="clipCount" class="clip-count"></span>
+    </div>
+    <div id="timeline" class="timeline"></div>
+  </footer>
+
+  <div id="tooltip" class="tooltip hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

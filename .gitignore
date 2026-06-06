@@ -1,0 +1,33 @@
+# Generated thumbnail/filmstrip cache
+.thumbcache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller / build artifacts
+build/
+dist/
+release/
+*.spec
+
+# Packaged video output
+*.zip
+*.zip.partial
+
+# Local scratch / test scripts
+_*.py
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# OS junk
+.DS_Store
+._*
+Thumbs.db
+desktop.ini

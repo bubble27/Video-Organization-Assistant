@@ -1,0 +1,474 @@
+"use strict";
+
+const LINE_COLORS = ["#4ea1ff", "#ffb347", "#46d18a", "#c77dff",
+                     "#ff7a9c", "#5ad1d1", "#f2c14e", "#8d99ae"];
+
+let MODEL = null;     // current model from backend
+let ROOT = "";        // active root folder
+let pollTimer = null;
+const unusedOpen = {}; // line name -> bool, persisted across re-renders
+const origNames = {};  // clip.key -> original filename, this session only (cleared on reload)
+let painted = false;   // first-paint flag, gates intro animation
+
+const $ = (sel) => document.querySelector(sel);
+const el = (tag, cls) => { const n = document.createElement(tag); if (cls) n.className = cls; return n; };
+
+function fmt(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m >= 60) {
+    const h = Math.floor(m / 60), mm = m % 60;
+    return `${h}:${String(mm).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function lineColor(i) { return LINE_COLORS[i % LINE_COLORS.length]; }
+
+// ---------------------------------------------------------------------------
+// API
+// ---------------------------------------------------------------------------
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function showStatus(html, kind) {
+  const s = $("#status");
+  s.className = "status" + (kind ? " " + kind : "");
+  s.innerHTML = html;
+}
+function hideStatus() { $("#status").className = "status hidden"; }
+
+// ---------------------------------------------------------------------------
+// Load / scan
+// ---------------------------------------------------------------------------
+async function chooseFolder() {
+  try {
+    const { path } = await api("/api/choose-folder", {});
+    if (path) { $("#pathInput").value = path; load(); } // auto-load on selection
+  } catch (e) { /* dialog unavailable; user can paste a path */ }
+}
+
+async function load() {
+  const path = $("#pathInput").value.trim();
+  if (!path) { showStatus("Enter or choose a folder first.", "error"); return; }
+  ROOT = path;
+  painted = false; // replay intro for the new folder
+  Object.keys(origNames).forEach((k) => delete origNames[k]); // fresh session per folder
+  $("#packageBtn").disabled = true;
+  try {
+    await api("/api/scan", { path });
+  } catch (e) {
+    showStatus("⚠️ " + e.message, "error");
+    return;
+  }
+  pollScan();
+}
+
+function pollScan() {
+  clearTimeout(pollTimer);
+  api("/api/scan-status").then((st) => {
+    if (st.error) { showStatus("⚠️ " + st.error, "error"); return; }
+    if (st.running) {
+      const pct = st.total ? Math.round((st.done / st.total) * 100) : 0;
+      showStatus(
+        `Generating previews… ${st.done}/${st.total}` +
+        `<span class="progress"><i style="width:${pct}%"></i></span>`);
+      pollTimer = setTimeout(pollScan, 350);
+    } else if (st.model) {
+      MODEL = st.model; ROOT = st.model.root;
+      hideStatus();
+      $("#packageBtn").disabled = false;
+      render();
+    } else {
+      pollTimer = setTimeout(pollScan, 350);
+    }
+  }).catch((e) => showStatus("⚠️ " + e.message, "error"));
+}
+
+function applyModel(data) {
+  if (data && data.model) { MODEL = data.model; render(); }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+function render() {
+  const wrap = $("#lines");
+  wrap.innerHTML = "";
+  if (!MODEL || !MODEL.lines.length) {
+    const e = el("div", "empty-hint");
+    e.textContent = "No line subfolders found in this folder.";
+    wrap.appendChild(e);
+    renderTimeline();
+    return;
+  }
+  const intro = !painted; painted = true;
+  MODEL.lines.forEach((line, idx) => wrap.appendChild(renderLine(line, idx, intro)));
+  renderTimeline();
+}
+
+function renderLine(line, idx, intro) {
+  const box = el("div", "line-box");
+  box.dataset.line = line.name;
+  if (intro) { box.classList.add("intro"); box.style.animationDelay = (idx * 70) + "ms"; }
+
+  const head = el("div", "line-head");
+  const h = el("h2"); h.textContent = line.label;
+  const dur = el("span", "line-dur"); dur.textContent = fmt(line.activeDuration);
+  const active = line.clips.filter((c) => c.active);
+  const unused = line.clips.filter((c) => !c.active);
+  const meta = el("span", "line-meta");
+  meta.textContent = `${active.length} active${unused.length ? ` · ${unused.length} unused` : ""}`;
+  head.append(h, dur, meta);
+  box.appendChild(head);
+
+  const grid = el("div", "clip-grid");
+  active.forEach((c) => grid.appendChild(renderClip(c, idx)));
+  box.appendChild(grid);
+
+  if (unused.length) {
+    const open = !!unusedOpen[line.name];
+    const sec = el("div", "unused-section" + (open ? "" : " collapsed"));
+    const uh = el("div", "unused-head");
+    uh.innerHTML = `<span class="chev">▾</span> Unused (${unused.length})`;
+    uh.addEventListener("click", () => {
+      sec.classList.toggle("collapsed");
+      unusedOpen[line.name] = !sec.classList.contains("collapsed");
+    });
+    const ug = el("div", "clip-grid");
+    unused.forEach((c) => ug.appendChild(renderClip(c, idx)));
+    sec.append(uh, ug);
+    box.appendChild(sec);
+  }
+
+  // drag target
+  box.addEventListener("dragover", (e) => { e.preventDefault(); box.classList.add("drag-over"); });
+  box.addEventListener("dragleave", () => box.classList.remove("drag-over"));
+  box.addEventListener("drop", (e) => {
+    e.preventDefault();
+    box.classList.remove("drag-over");
+    const payload = safeParse(e.dataTransfer.getData("text/plain"));
+    if (payload && payload.line !== line.name) moveClip(payload, line.name);
+  });
+
+  return box;
+}
+
+function renderClip(c, lineIdx) {
+  const card = el("div", "clip" + (c.active ? "" : " inactive"));
+  card.draggable = true;
+  card.dataset.name = c.name;
+
+  const film = el("div", "film");
+  film.style.backgroundImage = `url(/thumb/${c.key}.jpg)`;
+  film.style.backgroundSize = `${c.n * 100}% 100%`;
+  card.appendChild(film);
+
+  const badge = el("div", "badge");
+  const glyph = { main: '<span class="mk mk-main">★</span>',
+                  sub: '<span class="mk mk-sub">SUB</span>',
+                  outro: '<span class="mk mk-outro">OUTRO</span>' }[c.mark] || "";
+  badge.innerHTML = glyph + `<span>${fmt(c.duration)}</span>`;
+  const name = el("div", "name"); name.textContent = c.name;
+  const dot = el("div", "scrub-dot");
+  card.append(badge, name, dot);
+  if (!c.active) {
+    const toggle = el("div", "toggle"); toggle.textContent = "+";
+    card.appendChild(toggle);
+  }
+
+  // three-dot menu (visible on hover)
+  const menuBtn = el("div", "menu-btn"); menuBtn.textContent = "⋯";
+  menuBtn.addEventListener("mousedown", (e) => e.stopPropagation()); // don't start a drag
+  menuBtn.addEventListener("click", (e) => { e.stopPropagation(); openMenu(e, c); });
+  menuBtn.addEventListener("dblclick", (e) => e.stopPropagation());
+  card.appendChild(menuBtn);
+
+  // hover scrub through filmstrip frames
+  card.addEventListener("mousemove", (e) => {
+    const r = card.getBoundingClientRect();
+    const f = Math.min(0.9999, Math.max(0, (e.clientX - r.left) / r.width));
+    const i = Math.floor(f * c.n);
+    film.style.backgroundPositionX = (c.n > 1 ? (i / (c.n - 1)) * 100 : 0) + "%";
+    card.classList.add("scrubbing");
+    dot.style.left = (f * 100) + "%";
+    dot.style.width = "2px";
+    showTip(e, `<b>${c.name}</b><br>${fmt(c.duration)} · ${c.active ? "active" : "unused"}`);
+  });
+  card.addEventListener("mouseleave", () => {
+    film.style.backgroundPositionX = "0%";
+    card.classList.remove("scrubbing");
+    hideTip();
+  });
+
+  // click = toggle, double-click = open in default viewer
+  let clickTimer = null;
+  card.addEventListener("click", () => {
+    if (card._dragged) { card._dragged = false; return; }
+    clearTimeout(clickTimer);
+    clickTimer = setTimeout(() => toggleClip(c), 220);
+  });
+  card.addEventListener("dblclick", () => {
+    clearTimeout(clickTimer);
+    openClip(c);
+  });
+
+  card.addEventListener("dragstart", (e) => {
+    card.classList.add("dragging");
+    card._dragged = true;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", JSON.stringify(
+      { name: c.name, line: c.line, active: c.active }));
+  });
+  card.addEventListener("dragend", () => card.classList.remove("dragging"));
+
+  return card;
+}
+
+// Persisted segment elements, keyed by clip.key, so widths animate (lerp)
+// across re-renders instead of the whole bar being rebuilt.
+const segEls = {};
+
+function renderTimeline() {
+  const tl = $("#timeline");
+  const total = MODEL ? MODEL.totalActive : 0;
+  $("#totalDuration").textContent = fmt(total);
+
+  const active = [];
+  if (MODEL) MODEL.lines.forEach((ln, i) =>
+    ln.clips.filter((c) => c.active).forEach((c) => active.push({ c, i, label: ln.label })));
+  $("#clipCount").textContent = active.length ? `${active.length} clips` : "";
+
+  const want = new Set(active.map((a) => a.c.key));
+
+  // 1. create a segment for any new clip (starts at 0% so it can grow in)
+  const fresh = [];
+  active.forEach(({ c }) => {
+    if (segEls[c.key]) return;
+    const seg = el("div", "seg");
+    seg._key = c.key;
+    seg.style.width = "0%";
+    seg.addEventListener("mousemove", (e) => showTip(e, segTip(seg._d)));
+    seg.addEventListener("mouseenter", () => highlightCard(seg._d.name, true));
+    seg.addEventListener("mouseleave", () => { hideTip(); highlightCard(seg._d.name, false); });
+    segEls[c.key] = seg;
+    tl.appendChild(seg);
+    fresh.push(seg);
+  });
+
+  // 2. order active segments, stepping over departing ones so survivors
+  //    keep their position (a removed segment shrinks in place, not at the front)
+  let ref = tl.firstChild;
+  active.forEach(({ c }) => {
+    while (ref && !want.has(ref._key)) ref = ref.nextSibling;
+    const seg = segEls[c.key];
+    if (seg === ref) ref = ref.nextSibling;
+    else tl.insertBefore(seg, ref);
+  });
+
+  // 3. flush new segments at 0% so the width change actually transitions
+  fresh.forEach((s) => void s.offsetWidth);
+
+  // 4. set data + target widths (animates resize / grow-in)
+  active.forEach(({ c, i, label }) => {
+    const seg = segEls[c.key];
+    seg._d = { label, name: c.name, dur: c.duration };
+    seg.style.background = lineColor(i);
+    seg.style.width = total ? (c.duration / total * 100) + "%" : "0%";
+  });
+
+  // 5. shrink + remove departing segments in place
+  Object.keys(segEls).forEach((k) => {
+    if (want.has(k)) return;
+    const seg = segEls[k];
+    delete segEls[k];
+    seg.style.minWidth = "0";
+    seg.style.width = "0%";
+    const done = (e) => {
+      if (e.propertyName !== "width") return;
+      seg.removeEventListener("transitionend", done);
+      seg.remove();
+    };
+    seg.addEventListener("transitionend", done);
+    setTimeout(() => seg.remove(), 600); // safety net
+  });
+}
+
+function segTip(d) { return `<b>${d.label}</b><br>${d.name}<br>${fmt(d.dur)}`; }
+
+function highlightCard(name, on) {
+  document.querySelectorAll(`.clip[data-name="${CSS.escape(name)}"]`)
+    .forEach((n) => n.style.outline = on ? "2px solid #fff" : "");
+}
+
+// ---------------------------------------------------------------------------
+// Mutations
+// ---------------------------------------------------------------------------
+async function toggleClip(c) {
+  try {
+    const data = await api("/api/toggle",
+      { root: ROOT, line: c.line, name: c.name, active: !c.active });
+    applyModel(data);
+  } catch (e) { showStatus("⚠️ " + e.message, "error"); }
+}
+
+async function moveClip(payload, toLine) {
+  try {
+    const data = await api("/api/move",
+      { root: ROOT, name: payload.name, fromLine: payload.line, toLine, active: payload.active });
+    applyModel(data);
+  } catch (e) { showStatus("⚠️ " + e.message, "error"); }
+}
+
+async function openClip(c) {
+  try { await api("/api/open", { root: ROOT, line: c.line, name: c.name, active: c.active }); }
+  catch (e) { showStatus("⚠️ " + e.message, "error"); }
+}
+
+// Rename via mark ({mark}) or restore to a specific name ({target}).
+async function renameClip(c, opts) {
+  const original = origNames[c.key] || c.name; // the very first (pre-mark) name
+  try {
+    const data = await api("/api/rename",
+      Object.assign({ root: ROOT, line: c.line, name: c.name, active: c.active }, opts));
+    const ln = data.model.lines.find((l) => l.name === c.line);
+    const nc = ln && ln.clips.find((x) => x.name === data.newName);
+    delete origNames[c.key];
+    if (opts.mark && nc) origNames[nc.key] = original; // remember how to undo
+    // a restore ({target}) intentionally drops the record — we're back to original
+    applyModel(data);
+  } catch (e) { showStatus("⚠️ " + e.message, "error"); }
+}
+function markClip(c, mark) { return renameClip(c, { mark }); }
+function restoreClip(c) {
+  const o = origNames[c.key];
+  if (o) return renameClip(c, { target: o });
+}
+
+// ---------------------------------------------------------------------------
+// Clip context menu
+// ---------------------------------------------------------------------------
+const MENU_ITEMS = [
+  ["main", "★", "ic-main", "Mark as main clip"],
+  ["sub", "▮", "ic-sub", "Mark as sub clip"],
+  ["outro", "⤴", "ic-outro", "Mark as outro"],
+];
+let menuEl = null;
+
+function ensureMenu() {
+  if (!menuEl) {
+    menuEl = el("div", "clip-menu hidden");
+    document.body.appendChild(menuEl);
+  }
+  return menuEl;
+}
+function hideMenu() { if (menuEl) menuEl.classList.add("hidden"); }
+
+function openMenu(e, c) {
+  const m = ensureMenu();
+  m.innerHTML = "";
+  MENU_ITEMS.forEach(([key, ic, cls, label]) => {
+    const it = el("div", "menu-item");
+    it.innerHTML = `<span class="mi-ic ${cls}">${ic}</span>${label}` +
+      (c.mark === key ? '<span class="mi-check">✓</span>' : "");
+    it.addEventListener("click", (ev) => { ev.stopPropagation(); hideMenu(); markClip(c, key); });
+    m.appendChild(it);
+  });
+  const orig = origNames[c.key];
+  if (orig) {
+    m.appendChild(el("div", "menu-sep"));
+    const it = el("div", "menu-item");
+    it.innerHTML = `<span class="mi-ic ic-restore">↩</span>Restore name` +
+      `<span class="mi-orig">${orig}</span>`;
+    it.title = orig;
+    it.addEventListener("click", (ev) => { ev.stopPropagation(); hideMenu(); restoreClip(c); });
+    m.appendChild(it);
+  }
+  m.classList.remove("hidden");
+  const pad = 6, r = m.getBoundingClientRect();
+  let x = e.clientX, y = e.clientY;
+  if (x + r.width > window.innerWidth) x = window.innerWidth - r.width - pad;
+  if (y + r.height > window.innerHeight) y = window.innerHeight - r.height - pad;
+  m.style.left = x + "px"; m.style.top = y + "px";
+}
+
+document.addEventListener("click", hideMenu);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideMenu(); });
+window.addEventListener("scroll", hideMenu, true);
+
+async function packageVideo() {
+  $("#packageBtn").disabled = true;
+  try {
+    await api("/api/package", { path: ROOT });
+  } catch (e) {
+    showStatus("⚠️ " + e.message, "error");
+    $("#packageBtn").disabled = false;
+    return;
+  }
+  pollPackage();
+}
+
+function pollPackage() {
+  api("/api/package-status").then((st) => {
+    if (st.error) {
+      showStatus("⚠️ Packaging failed: " + st.error, "error");
+      $("#packageBtn").disabled = false;
+      return;
+    }
+    if (st.running) {
+      const pct = st.total ? Math.round((st.done / st.total) * 100) : 0;
+      showStatus(`📦 Packaging… ${st.done}/${st.total}` +
+        `<span class="progress"><i style="width:${pct}%"></i></span>`);
+      setTimeout(pollPackage, 300);
+    } else if (st.zip) {
+      const gb = st.bytes / 1e9;
+      let msg = `✅ Packaged ${st.count} files → <b>${st.zip}</b> (${gb.toFixed(2)} GB)`;
+      if (gb > 4) {
+        msg += `<div class="hint">Over 4 GB, so Windows' built-in zip viewer can't open it ` +
+          `(that's the "access denied" error). Extract with 7-Zip, or in PowerShell:<br>` +
+          `<code>Expand-Archive "${st.zip}" -DestinationPath "&lt;folder&gt;"</code><br>` +
+          `On macOS it opens normally.</div>`;
+      }
+      showStatus(`<div class="pkg-msg">${msg}</div>`);
+      $("#packageBtn").disabled = false;
+    } else {
+      setTimeout(pollPackage, 300);
+    }
+  }).catch((e) => {
+    showStatus("⚠️ " + e.message, "error");
+    $("#packageBtn").disabled = false;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tooltip
+// ---------------------------------------------------------------------------
+function showTip(e, html) {
+  const t = $("#tooltip");
+  t.innerHTML = html;
+  t.classList.remove("hidden");
+  const pad = 14;
+  let x = e.clientX + pad, y = e.clientY + pad;
+  const r = t.getBoundingClientRect();
+  if (x + r.width > window.innerWidth) x = e.clientX - r.width - pad;
+  if (y + r.height > window.innerHeight) y = e.clientY - r.height - pad;
+  t.style.left = x + "px"; t.style.top = y + "px";
+}
+function hideTip() { $("#tooltip").classList.add("hidden"); }
+
+function safeParse(s) { try { return JSON.parse(s); } catch { return null; } }
+
+// ---------------------------------------------------------------------------
+// Wire up
+// ---------------------------------------------------------------------------
+$("#chooseBtn").addEventListener("click", chooseFolder);
+$("#packageBtn").addEventListener("click", packageVideo);
+$("#pathInput").addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
