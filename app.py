@@ -124,23 +124,21 @@ def ensure_sprite(path):
     pad = (f"scale={FRAME_W}:{FRAME_H}:force_original_aspect_ratio=decrease,"
            f"pad={FRAME_W}:{FRAME_H}:(ow-iw)/2:(oh-ih)/2:black")
 
-    # Single pass: open the file ONCE, walk it sequentially, sample N frames and
-    # tile them. Far fewer file opens / no random seeks than per-frame -ss (which
-    # matters enormously on slow or external USB drives), and -hwaccel lets the
-    # GPU decode HEVC (VideoToolbox on macOS) so the full decode stays fast.
+    # Single pass, and crucially decode ONLY keyframes (-skip_frame nokey): a
+    # 12s clip has ~360 frames but only ~10 keyframes, so this cuts the decode
+    # work ~30x while still spreading the sampled frames across the whole clip
+    # (the fps filter places them by timestamp). One sequential read, minimal
+    # decode — fast even on a slow Mac / external drive.
     tmp = sp + ".tmp.jpg"
     full = f"{pad},tile={N_FRAMES}x1"
-    # GPU decode helps where it's reliable (VideoToolbox on macOS); on Windows
-    # -hwaccel auto tends to fall back to software and just adds overhead.
-    hw = ["-hwaccel", "videotoolbox"] if sys.platform == "darwin" else []
     attempts = []
     if duration and duration > 0:
         vf = f"fps={N_FRAMES}/{duration:.6f},{full}"
-        if hw:
-            attempts.append(["ffmpeg", "-y", *hw, "-an", "-i", path,
-                             "-vf", vf, "-frames:v", "1", "-q:v", "5", tmp])
+        attempts.append(["ffmpeg", "-y", "-skip_frame", "nokey", "-an", "-i", path,
+                         "-vf", vf, "-frames:v", "1", "-q:v", "5", tmp])
+        # full decode fallback (rare: a file with too few keyframes)
         attempts.append(["ffmpeg", "-y", "-an", "-i", path,
-                         "-vf", vf, "-frames:v", "1", "-q:v", "5", tmp])  # software
+                         "-vf", vf, "-frames:v", "1", "-q:v", "5", tmp])
     # first-frame only (duration unknown / odd file)
     attempts.append(["ffmpeg", "-y", "-an", "-i", path,
                      "-vf", full, "-frames:v", "1", "-q:v", "5", tmp])
