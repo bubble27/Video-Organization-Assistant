@@ -12,6 +12,7 @@ It starts a local server and opens your browser.
 import os
 import re
 import sys
+import time
 import json
 import shutil
 import hashlib
@@ -39,6 +40,14 @@ N_FRAMES = 10           # frames per filmstrip
 FRAME_W, FRAME_H = 160, 120
 VIDEO_EXTS = {".mov", ".mp4", ".m4v", ".avi", ".mkv"}
 HOST, PORT = "127.0.0.1", 8765
+
+# Set VOA_DEBUG=1 to print timing/diagnostics to the terminal.
+DEBUG = os.environ.get("VOA_DEBUG", "") not in ("", "0", "false", "False")
+
+
+def dlog(*args):
+    if DEBUG:
+        print("[debug]", *args, flush=True)
 
 # Shared scan job state (single user, so one global job is fine)
 JOB = {"running": False, "total": 0, "done": 0, "model": None, "error": None, "root": None}
@@ -140,11 +149,11 @@ def ensure_sprite(path):
                      f"color=c=black:s={FRAME_W * N_FRAMES}x{FRAME_H}",
                      "-frames:v", "1", "-q:v", "5", tmp])
 
-    ok = False
-    for cmd in attempts:
+    ok, won, t0 = False, -1, time.time()
+    for idx, cmd in enumerate(attempts):
         rc, _, _ = _run(cmd)
         if rc == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
-            ok = True
+            ok, won = True, idx
             break
         try:
             if os.path.exists(tmp):
@@ -153,6 +162,8 @@ def ensure_sprite(path):
             pass
     if ok:
         os.replace(tmp, sp)
+    dlog(f"sprite {os.path.basename(path)}: {time.time() - t0:.1f}s "
+         f"attempt#{won} dur={duration:.1f}s ok={ok}")
 
     meta = {"key": key, "duration": duration, "n": N_FRAMES,
             "frameW": FRAME_W, "frameH": FRAME_H}
@@ -336,6 +347,9 @@ def start_scan(root):
                    and os.path.exists(meta_path(clip_key(p))))
         JOB.update(running=True, total=len(paths), done=done,
                    model=None, error=None, root=root)
+
+    dlog(f"scan: {len(paths)} clips under {root} ({done} already cached), "
+         f"platform={sys.platform}")
 
     def worker():
         try:
