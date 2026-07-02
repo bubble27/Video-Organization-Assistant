@@ -20,6 +20,7 @@ import zipfile
 import threading
 import subprocess
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, unquote
 
@@ -43,6 +44,15 @@ HOST, PORT = "127.0.0.1", 8765
 
 # Set VOA_DEBUG=1 to print timing/diagnostics to the terminal.
 DEBUG = os.environ.get("VOA_DEBUG", "") not in ("", "0", "false", "False")
+
+# How many previews to generate concurrently. Default scales with CPU cores;
+# override with VOA_JOBS (e.g. VOA_JOBS=1 for a strictly-sequential, drive-gentle run).
+try:
+    SCAN_JOBS = int(os.environ.get("VOA_JOBS", "") or 0)
+except ValueError:
+    SCAN_JOBS = 0
+if SCAN_JOBS <= 0:
+    SCAN_JOBS = max(2, min(6, (os.cpu_count() or 4)))
 
 
 def dlog(*args):
@@ -332,14 +342,13 @@ def clip_disk_path(root, line, name, active):
 # ----------------------------------------------------------------------------
 
 def start_scan(root):
-    """Kick off preview generation in the background, ONE CLIP AT A TIME, so the
-    UI can open immediately and previews fill in progressively. Sequential is
-    also far gentler on slow/external drives than hammering them in parallel."""
+    """Kick off preview generation in the background so the UI opens immediately
+    and previews fill in progressively. Generates a few clips concurrently (tune
+    with VOA_JOBS; set VOA_JOBS=1 for strictly-sequential on a flaky drive)."""
     with JOB_LOCK:
         if JOB["running"]:
             return False
         paths = gather_all_clip_paths(root)
-        # already-cached clips count as done up front
         done = sum(1 for p in paths
                    if os.path.exists(sprite_path(clip_key(p)))
                    and os.path.exists(meta_path(clip_key(p))))
@@ -347,19 +356,27 @@ def start_scan(root):
                    model=None, error=None, root=root)
 
     dlog(f"scan: {len(paths)} clips under {root} ({done} already cached), "
-         f"platform={sys.platform}")
+         f"jobs={SCAN_JOBS}, platform={sys.platform}")
+
+    def one(p):
+        key = clip_key(p)
+        if os.path.exists(sprite_path(key)) and os.path.exists(meta_path(key)):
+            return  # already cached (already counted in the initial `done`)
+        try:
+            ensure_sprite(p)
+        except Exception:  # noqa: BLE001 — a bad/locked file shouldn't stop the rest
+            pass
+        with JOB_LOCK:
+            JOB["done"] += 1
 
     def worker():
         try:
-            for p in paths:
-                key = clip_key(p)
-                if not (os.path.exists(sprite_path(key)) and os.path.exists(meta_path(key))):
-                    try:
-                        ensure_sprite(p)
-                    except Exception:  # noqa: BLE001 — a bad/locked file shouldn't stop the rest
-                        pass
-                    with JOB_LOCK:
-                        JOB["done"] += 1
+            if SCAN_JOBS <= 1:
+                for p in paths:
+                    one(p)
+            else:
+                with ThreadPoolExecutor(max_workers=SCAN_JOBS) as ex:
+                    list(ex.map(one, paths))
         except Exception as e:  # noqa: BLE001
             with JOB_LOCK:
                 JOB["error"] = str(e)
