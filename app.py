@@ -59,6 +59,13 @@ def dlog(*args):
     if DEBUG:
         print("[debug]", *args, flush=True)
 
+# Auto-quit when the browser goes away: the page pings /api/heartbeat; if the
+# pings stop for this long (tab/window closed), the server shuts itself down.
+# Brief reloads are shorter than the timeout, so they don't trigger a shutdown.
+HEARTBEAT_TIMEOUT = 8.0
+BEAT = {"t": 0.0, "seen": False}
+BEAT_LOCK = threading.Lock()
+
 # Shared scan job state (single user, so one global job is fine)
 JOB = {"running": False, "total": 0, "done": 0, "model": None, "error": None, "root": None}
 JOB_LOCK = threading.Lock()
@@ -799,6 +806,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, resp)
         if p == "/api/health":
             return self._send(200, {"ffmpeg": have_tools()})
+        if p == "/api/heartbeat":
+            with BEAT_LOCK:
+                BEAT["t"] = time.time()
+                BEAT["seen"] = True
+            return self._send(200, {"ok": True})
         if p == "/api/clip":
             q = self._query()
             try:
@@ -836,6 +848,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if p == "/api/choose-folder":
                 return self._send(200, {"path": pick_folder()})
+
+            if p == "/api/quit":
+                # shut the server down from another thread (can't from this one)
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return self._send(200, {"ok": True})
 
             if p == "/api/folder-state":
                 root = body.get("path", "").strip()
@@ -1000,16 +1017,33 @@ def main():
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     url = f"http://{HOST}:{PORT}/"
     print(f"Clip Organizer running at {url}")
-    print("Press Ctrl+C to stop.")
+    print("Press Ctrl+C to stop (or just close the browser tab).")
+
+    # Auto-quit when the browser closes (skipped under VOA_DEBUG so debugging
+    # sessions can reload/close the tab freely).
+    if not DEBUG:
+        def watchdog():
+            while True:
+                time.sleep(2)
+                with BEAT_LOCK:
+                    seen, last = BEAT["seen"], BEAT["t"]
+                if seen and (time.time() - last) > HEARTBEAT_TIMEOUT:
+                    print("Browser closed — shutting down.")
+                    srv.shutdown()
+                    return
+        threading.Thread(target=watchdog, daemon=True).start()
+
     try:
         webbrowser.open(url)
     except Exception:  # noqa: BLE001
         pass
     try:
-        srv.serve_forever()
+        srv.serve_forever()   # returns when /api/quit calls srv.shutdown()
     except KeyboardInterrupt:
         print("\nShutting down.")
         srv.shutdown()
+    srv.server_close()
+    print("Stopped.")
 
 
 if __name__ == "__main__":

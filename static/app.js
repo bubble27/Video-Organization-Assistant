@@ -692,3 +692,23 @@ function safeParse(s) { try { return JSON.parse(s); } catch { return null; } }
 $("#chooseBtn").addEventListener("click", chooseFolder);
 $("#packageBtn").addEventListener("click", packageVideo);
 $("#pathInput").addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
+
+// Heartbeat: lets the server auto-quit when this tab/window closes. Brief
+// reloads pause the pings only briefly, under the server's timeout.
+let heartbeatOn = true;
+function heartbeat() { if (heartbeatOn) fetch("/api/heartbeat").catch(() => {}); }
+heartbeat();
+setInterval(heartbeat, 3000);
+
+$("#quitBtn").addEventListener("click", async () => {
+  if (!window.confirm("Stop Video Organizer? You can relaunch it anytime.")) return;
+  heartbeatOn = false;
+  try { await api("/api/quit", {}); } catch (e) { /* server is going down */ }
+  document.title = "Video Organizer — stopped";
+  document.body.innerHTML =
+    '<div style="height:100vh;display:flex;flex-direction:column;align-items:center;' +
+    'justify-content:center;gap:10px;color:#93a0b0;font-family:-apple-system,sans-serif;">' +
+    '<div style="font-size:40px;">👋</div>' +
+    '<div style="font-size:16px;color:#e7ebf0;">Video Organizer has stopped.</div>' +
+    '<div>You can close this tab. Relaunch from the app icon anytime.</div></div>';
+});

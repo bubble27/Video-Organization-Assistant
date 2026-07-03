@@ -2,6 +2,8 @@
 * text=auto
 *.command text eol=lf
 *.sh text eol=lf
+# the .app launcher has no extension but must stay LF (CRLF breaks the shebang)
+"Video Organizer.app/Contents/MacOS/run" text eol=lf
 *.py text eol=lf
 *.css text eol=lf
 *.js text eol=lf

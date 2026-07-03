@@ -1,0 +1,24 @@
+#!/bin/bash
+# Launcher for the "Video Organizer" .app bundle. This lives at
+#   <repo>/Video Organizer.app/Contents/MacOS/run
+# so the repo root (where app.py is) is three levels up.
+
+# GUI-launched apps get a minimal PATH — add the usual Homebrew locations so
+# python3 and ffmpeg are found.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
+cd "$REPO" || exit 1
+
+if ! command -v python3 >/dev/null 2>&1; then
+  osascript -e 'display alert "Python 3 not found" message "Install it with:  brew install python\n\nThen open Video Organizer again."'
+  exit 1
+fi
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  osascript -e 'display alert "ffmpeg not found" message "Install it with:  brew install ffmpeg\n\nThen open Video Organizer again."'
+  exit 1
+fi
+
+# Run the server (opens the browser itself). Logs go to the system log; run
+# `python3 app.py` in Terminal instead if you need to see them live.
+exec python3 app.py

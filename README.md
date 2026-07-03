@@ -87,14 +87,19 @@ No Python packages to install — the backend is pure standard library.
 2. If you don't already have ffmpeg, double-click **`Install ffmpeg.command`**
    once. (It uses [Homebrew](https://brew.sh); if you don't have Homebrew the
    script tells you the one line to paste into Terminal first.)
-3. Double-click **`Clip Organizer.command`** to launch. Your browser opens to the
-   app automatically.
+3. **Double-click `Video Organizer.app`** to launch — your browser opens to the
+   app automatically. **Drag it onto your Dock** to keep it one click away.
+   (No Terminal needed. `Clip Organizer.command` still works too, if you prefer a
+   window with logs.)
 
-> **First launch / Gatekeeper:** because the launcher is downloaded from the
-> internet, macOS may say it "cannot verify the developer." If so, **right-click**
-> the `.command` file → **Open** → **Open**. You only need to do this once.
+> **First launch / Gatekeeper:** macOS may say it "cannot verify the developer."
+> If so, **right-click** the app → **Open** → **Open**. Only needed once.
 
-To quit, close the small Terminal window that opened.
+### Stopping it
+
+- Click **Quit** in the app's top bar, **or**
+- Just **close the browser tab/window** — the app notices and shuts itself down a
+  few seconds later. (A quick reload won't stop it.)
 
 ---
 

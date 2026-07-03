@@ -287,6 +287,7 @@ button.primary:hover:not(:disabled) { background: #6cb3ff; }
   font-size: 12px; color: var(--muted); padding: 5px 10px;
   border: 1px solid var(--line); border-radius: 7px; white-space: nowrap;
 }
+#quitBtn:hover:not(:disabled) { background: #3a2026; border-color: var(--danger); color: #ffd2d7; }
 
 /* ===================== STAGE 1: triage ===================== */
 #stage1, #assetPrompt {
