@@ -24,7 +24,9 @@ function startStage1(state) {
   hideStatus();
   S1.preferPreview = false; // start optimistic; we try the raw clip first
   S1.clips = state.loose.slice();
-  S1.lines = state.lines && state.lines.length ? state.lines.slice() : [1];
+  S1.lines = (state.lines && state.lines.length)
+    ? state.lines.map((l) => ({ n: l.n, name: l.name || "" }))
+    : [{ n: 1, name: "" }];
   S1.idx = 0;
   S1.unused = false;
   S1.mark = null;
@@ -133,7 +135,7 @@ document.querySelectorAll("#s1Marks button").forEach((b) =>
 
 $("#s1Open").addEventListener("click", () => {
   const name = s1Current();
-  if (name) api("/api/open", { root: ROOT, line: "", name, active: true }).catch(() => {});
+  if (name) openSidePlayer(name, name);  // loose clip lives in the root
 });
 
 $("#s1Skip").addEventListener("click", skipCurrent);
@@ -146,30 +148,62 @@ function skipCurrent() {
 }
 
 // ---- line buttons ---------------------------------------------------------
+function s1Line(n) { return S1.lines.find((l) => l.n === n); }
+function nextLineNumber() {
+  return (S1.lines.length ? Math.max.apply(null, S1.lines.map((l) => l.n)) : 0) + 1;
+}
+function mergeLines(stateLines) {
+  const byN = {};
+  S1.lines.forEach((l) => { byN[l.n] = l; });
+  (stateLines || []).forEach((li) => { byN[li.n] = { n: li.n, name: li.name || "" }; });
+  S1.lines = Object.values(byN).sort((a, b) => a.n - b.n);
+}
+
 function renderLineButtons() {
   const wrap = $("#s1Lines");
   wrap.innerHTML = "";
-  S1.lines.slice().sort((a, b) => a - b).forEach((n) => {
+  S1.lines.slice().sort((a, b) => a.n - b.n).forEach((l) => {
     const b = el("button", "s1-line");
-    b.innerHTML = `<span class="s1-line-key">${n <= 9 ? n : "·"}</span> Line ${n}`;
-    b.addEventListener("click", () => assignTo(n));
+    const label = l.name ? `L${l.n} · ${l.name}` : `Line ${l.n}`;
+    b.innerHTML = `<span class="s1-line-key">${l.n <= 9 ? l.n : "·"}</span>` +
+      `<span class="s1-line-label">${label}</span>` +
+      `<span class="s1-line-edit" title="Name this line">✎</span>`;
+    b.addEventListener("click", () => assignTo(l.n));
+    b.querySelector(".s1-line-edit").addEventListener("click", (e) => {
+      e.stopPropagation(); renameLine(l.n);
+    });
     wrap.appendChild(b);
   });
   const add = el("button", "s1-line s1-add"); add.textContent = "＋";
   add.title = "Add another line";
   add.addEventListener("click", () => {
-    const next = (S1.lines.length ? Math.max.apply(null, S1.lines) : 0) + 1;
-    S1.lines.push(next);
+    const n = nextLineNumber();
+    const name = (window.prompt(`Name for Line ${n} (optional, e.g. "M2"):`, "") || "").trim();
+    S1.lines.push({ n, name });
     renderLineButtons();
   });
   wrap.appendChild(add);
+}
+
+function renameLine(n) {
+  const l = s1Line(n);
+  if (!l) return;
+  const nn = window.prompt(`Line ${n} name (blank to clear):`, l.name || "");
+  if (nn === null) return;              // cancelled
+  l.name = nn.trim();
+  renderLineButtons();
+  // sync the folder on disk if it already exists
+  api("/api/rename-line", { root: ROOT, n, name: l.name })
+    .then((res) => { mergeLines(res.state.lines); renderLineButtons(); })
+    .catch((e) => showStatus("⚠️ " + e.message, "error"));
 }
 
 async function assignTo(n) {
   if (S1.busy) return;
   const name = s1Current();
   if (!name) return;
-  if (!S1.lines.includes(n)) { S1.lines.push(n); renderLineButtons(); }
+  let entry = s1Line(n);
+  if (!entry) { entry = { n, name: "" }; S1.lines.push(entry); renderLineButtons(); }
   S1.busy = true;
 
   // stop the player so the file isn't being range-requested while it moves
@@ -179,12 +213,9 @@ async function assignTo(n) {
 
   try {
     const res = await api("/api/assign",
-      { root: ROOT, name, line: n, unused: S1.unused, mark: S1.mark });
-    // merge any newly-created line folders the server reports
-    const merged = new Set(S1.lines);
-    (res.state.lines || []).forEach((x) => merged.add(x));
-    S1.lines = Array.from(merged).sort((a, b) => a - b);
-    S1.clips.splice(S1.idx, 1);          // remove the filed clip from the queue
+      { root: ROOT, name, line: n, lineName: entry.name, unused: S1.unused, mark: S1.mark });
+    mergeLines(res.state.lines);          // adopt server's folder names
+    S1.clips.splice(S1.idx, 1);           // remove the filed clip from the queue
     if (S1.idx >= S1.clips.length) S1.idx = 0;
     renderLineButtons();
     showCurrent();
@@ -209,8 +240,8 @@ document.addEventListener("keydown", (e) => {
   else if (k === "o") { e.preventDefault(); setMark("outro"); }
   else if (k === "+" || k === "=") {
     e.preventDefault();
-    const next = (S1.lines.length ? Math.max.apply(null, S1.lines) : 0) + 1;
-    S1.lines.push(next); renderLineButtons();
+    S1.lines.push({ n: nextLineNumber(), name: "" });
+    renderLineButtons();
   }
 });
 

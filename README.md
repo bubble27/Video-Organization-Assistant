@@ -26,6 +26,10 @@ works for any folder of clips.
   (the raw `.MOV`, so it works best in Safari / on macOS where HEVC decodes).
 - **File into a line** — press **1–9** or click a line button to move the clip
   into `L1`, `L2`, … A **+** adds more lines (and is how you reach lines past 9).
+- **Name your lines** — click the **✎** on a line (or when adding one) to name it;
+  the folder becomes `L# - NAME` (e.g. `L2 - M2`) and Stage 2 shows "Line 2 · M2".
+- **Watch a clip in-app** — **Open ↗** plays it in a panel on the right (no slow
+  system-player launch).
 - **Flag as unused** (the ⚑ button / **F**) files the clip into that line's
   `Unused/` subfolder instead.
 - **Mark on the way in** — **M** main, **B** sub, **O** outro (same `U USED` /
@@ -141,7 +145,8 @@ The app serves at `http://127.0.0.1:8765/` and opens your browser.
 3. **Hover** a clip to scrub its filmstrip; the tooltip shows its duration.
 4. **Click** a clip to remove it (→ `Unused/`); click it again to restore it.
 5. **Drag** a clip onto another line to move it there.
-6. **Double-click** a clip to open it in your default player.
+6. **Double-click** a clip to play it in the in-app side player (⋯ menu →
+   **Open in system player** if you'd rather use the OS app).
 7. Use the **⋯ menu** to mark a clip as main / sub / outro, or restore its name.
 8. Click **📦 Package Video** to produce `<FolderName>.zip` next to the folder.
 

@@ -346,7 +346,33 @@ button.primary:hover:not(:disabled) { background: #6cb3ff; }
   width: 22px; height: 22px; border-radius: 6px; font-size: 12px;
   background: var(--bg); color: var(--accent); border: 1px solid var(--line);
 }
+.s1-line-edit {
+  opacity: .5; font-size: 12px; padding-left: 2px; cursor: pointer;
+}
+.s1-line-edit:hover { opacity: 1; color: var(--accent); }
 .s1-add { font-size: 18px; font-weight: 700; padding: 12px 16px; }
+
+/* ===================== in-app side player ===================== */
+.side-player {
+  position: fixed; top: var(--top-h); right: 0; bottom: 0;
+  width: min(48vw, 680px); z-index: 45;
+  background: #06080b; border-left: 1px solid var(--line);
+  display: flex; flex-direction: column;
+  box-shadow: -14px 0 44px rgba(0, 0, 0, .55);
+  animation: sideIn .2s ease;
+}
+@keyframes sideIn { from { transform: translateX(24px); opacity: .5; } to { transform: none; opacity: 1; } }
+.sp-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-bottom: 1px solid var(--line);
+}
+.sp-title {
+  font-size: 13px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sp-close { margin-left: auto; }
+.sp-video { flex: 1; width: 100%; min-height: 0; background: #000; }
+.sp-note { padding: 8px 12px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
 .s1-hint { color: var(--muted); font-size: 12px; }
 .s1-hint b {
   color: var(--text); background: var(--panel-2); border: 1px solid var(--line);

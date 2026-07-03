@@ -232,12 +232,35 @@ def is_video(name):
     return os.path.splitext(name)[1].lower() in VIDEO_EXTS and not is_junk(name)
 
 
-def line_label(name):
-    """Turn folder name like 'L1' or 'Line 2' into a display label 'Line N'."""
-    digits = "".join(c for c in name if c.isdigit())
-    if digits and any(c.isalpha() for c in name):
-        return f"Line {int(digits)}"
-    return name
+# Line folders are named "L<n>" or "L<n> - <NAME>" (e.g. "L2 - M2").
+_LINE_RE = re.compile(r"^[Ll]\s*0*(\d+)\s*(?:-\s*(.*))?$")
+
+
+def parse_line(folder):
+    """('L2 - M2') -> (2, 'M2'); ('L1') -> (1, ''); non-line -> None."""
+    m = _LINE_RE.match(folder.strip())
+    if not m:
+        return None
+    return int(m.group(1)), (m.group(2) or "").strip()
+
+
+def clean_line_name(s):
+    """Strip characters that aren't safe in a folder name."""
+    return re.sub(r'[\\/:*?"<>|]+', "", (s or "")).strip()
+
+
+def line_folder_name(n, name):
+    name = clean_line_name(name)
+    return f"L{int(n)} - {name}" if name else f"L{int(n)}"
+
+
+def line_label(folder):
+    """Folder name -> display label, e.g. 'L2 - M2' -> 'Line 2 · M2'."""
+    p = parse_line(folder)
+    if p:
+        n, nm = p
+        return f"Line {n} · {nm}" if nm else f"Line {n}"
+    return folder
 
 
 # Filename markers the user applies to clips. The mark is encoded in the name
@@ -532,16 +555,23 @@ def loose_clips(root):
                   if is_video(n) and os.path.isfile(os.path.join(root, n)))
 
 
-def line_numbers(root):
-    """Existing L<n> line-folder numbers in the root, sorted ascending."""
-    nums = set()
+def line_infos(root):
+    """Existing line folders as [{n, name, folder}], sorted by number."""
+    infos = []
     if os.path.isdir(root):
-        for n in os.listdir(root):
-            if os.path.isdir(os.path.join(root, n)):
-                m = re.fullmatch(r"[Ll]\s*0*(\d+)", n.strip())
-                if m:
-                    nums.add(int(m.group(1)))
-    return sorted(nums)
+        for f in os.listdir(root):
+            if f in RESERVED_DIRS or not os.path.isdir(os.path.join(root, f)):
+                continue
+            p = parse_line(f)
+            if p:
+                infos.append({"n": p[0], "name": p[1], "folder": f})
+    infos.sort(key=lambda x: x["n"])
+    return infos
+
+
+def line_folder_for(root, n):
+    """The existing folder name for line <n>, if any."""
+    return next((i["folder"] for i in line_infos(root) if i["n"] == int(n)), None)
 
 
 def asset_dir(root, kind):
@@ -566,17 +596,19 @@ def folder_state(root):
         "root": root,
         "phase": 1 if loose else 2,
         "loose": loose,
-        "lines": line_numbers(root),
+        "lines": line_infos(root),
         "assets": list_assets(root),
     }
 
 
-def assign_clip(root, name, line_num, unused, mark):
-    """Move a loose root clip into L<n>/ (or L<n>/Unused/), applying a mark rename."""
+def assign_clip(root, name, line_num, line_name, unused, mark):
+    """Move a loose root clip into 'L<n> - <name>/' (or its Unused/ subfolder),
+    applying a mark rename. Reuses the existing folder for that line number."""
     src = safe_join(root, name)
     if os.path.dirname(src) != os.path.abspath(root) or not os.path.isfile(src):
         raise FileNotFoundError("clip not found in root")
-    dest_dir = os.path.join(root, f"L{int(line_num)}")
+    folder = line_folder_for(root, line_num) or line_folder_name(line_num, line_name)
+    dest_dir = os.path.join(root, folder)
     if unused:
         dest_dir = os.path.join(dest_dir, UNUSED_NAME)
     os.makedirs(dest_dir, exist_ok=True)
@@ -589,6 +621,20 @@ def assign_clip(root, name, line_num, unused, mark):
         i += 1
     shutil.move(src, cand)
     return os.path.basename(cand)
+
+
+def rename_line(root, n, new_name):
+    """Rename line <n>'s folder to the canonical 'L<n> - <name>'. No-op if the
+    folder doesn't exist yet (the name is applied when the first clip lands)."""
+    target = line_folder_name(n, new_name)
+    existing = line_folder_for(root, n)
+    if existing and existing != target:
+        src = os.path.join(root, existing)
+        dst = os.path.join(root, target)
+        if os.path.exists(dst):
+            raise ValueError("A line folder with that name already exists.")
+        os.rename(src, dst)
+    return target
 
 
 def save_asset(root, kind, filename, data):
@@ -800,8 +846,14 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/assign":
                 root = body["root"]
                 new = assign_clip(root, body["name"], body["line"],
+                                  body.get("lineName", ""),
                                   bool(body.get("unused")), body.get("mark"))
                 return self._send(200, {"assigned": new, "state": folder_state(root)})
+
+            if p == "/api/rename-line":
+                root = body["root"]
+                rename_line(root, body["n"], body.get("name", ""))
+                return self._send(200, {"state": folder_state(root)})
 
             if p == "/api/asset-remove":
                 remove_asset(body["root"], body["kind"], body["name"])

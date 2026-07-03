@@ -93,6 +93,16 @@
   <div id="tooltip" class="tooltip hidden"></div>
   <input id="assetFileInput" type="file" multiple hidden>
 
+  <!-- in-app video player (slides in from the right) -->
+  <aside id="sidePlayer" class="side-player hidden">
+    <div class="sp-head">
+      <span id="spTitle" class="sp-title"></span>
+      <button id="spClose" class="sp-close" title="Close (Esc)">✕</button>
+    </div>
+    <video id="spVideo" class="sp-video" controls autoplay playsinline></video>
+    <div id="spNote" class="sp-note hidden"></div>
+  </aside>
+
   <script src="/static/app.js"></script>
   <script src="/static/stage1.js"></script>
 </body>

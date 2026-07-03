@@ -298,7 +298,7 @@ function renderClip(c, lineIdx) {
   });
   card.addEventListener("dblclick", () => {
     clearTimeout(clickTimer);
-    openClip(c);
+    openSidePlayer(c.name, clipRelPath(c));   // in-app player, not the OS one
   });
 
   card.addEventListener("dragstart", (e) => {
@@ -472,6 +472,11 @@ function openMenu(e, c) {
     it.addEventListener("click", (ev) => { ev.stopPropagation(); hideMenu(); restoreClip(c); });
     m.appendChild(it);
   }
+  m.appendChild(el("div", "menu-sep"));
+  const openIt = el("div", "menu-item");
+  openIt.innerHTML = `<span class="mi-ic">↗</span>Open in system player`;
+  openIt.addEventListener("click", (ev) => { ev.stopPropagation(); hideMenu(); openClip(c); });
+  m.appendChild(openIt);
   m.classList.remove("hidden");
   const pad = 6, r = m.getBoundingClientRect();
   let x = e.clientX, y = e.clientY;
@@ -615,6 +620,53 @@ function renderAssetBar() {
     bar.appendChild(group);
   });
 }
+
+// ---------------------------------------------------------------------------
+// In-app side player (plays raw .MOV; falls back to preview if the browser
+// can't decode it). Replaces launching the slow system media player.
+// ---------------------------------------------------------------------------
+let spMode = "idle", spRel = "";
+
+function clipRelPath(c) {
+  const parts = [c.line];
+  if (!c.active) parts.push("Unused");
+  parts.push(c.name);
+  return parts.join("/");
+}
+
+function openSidePlayer(title, relpath) {
+  const v = $("#spVideo");
+  spRel = relpath; spMode = "raw";
+  $("#spTitle").textContent = title;
+  $("#spNote").classList.add("hidden");
+  v.src = `/api/clip?root=${encodeURIComponent(ROOT)}&path=${encodeURIComponent(relpath)}`;
+  v.load();
+  const p = v.play(); if (p && p.catch) p.catch(() => {});
+  $("#sidePlayer").classList.remove("hidden");
+  document.body.classList.add("side-open");
+}
+
+function closeSidePlayer() {
+  const v = $("#spVideo");
+  spMode = "idle";
+  v.pause(); v.removeAttribute("src"); v.load();
+  $("#sidePlayer").classList.add("hidden");
+  document.body.classList.remove("side-open");
+}
+
+$("#spClose").addEventListener("click", closeSidePlayer);
+$("#spVideo").addEventListener("error", function () {
+  if (spMode !== "raw") return;        // idle (cleared src) or already on preview
+  spMode = "preview";
+  $("#spNote").textContent = "Showing a low-res preview — this browser can't play the original .MOV.";
+  $("#spNote").classList.remove("hidden");
+  this.src = `/api/preview?root=${encodeURIComponent(ROOT)}&path=${encodeURIComponent(spRel)}`;
+  this.load();
+  const p = this.play(); if (p && p.catch) p.catch(() => {});
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#sidePlayer").classList.contains("hidden")) closeSidePlayer();
+});
 
 // ---------------------------------------------------------------------------
 // Tooltip
