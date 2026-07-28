@@ -3,9 +3,18 @@
 #   <repo>/Video Organizer.app/Contents/MacOS/run
 # so the repo root (where app.py is) is three levels up.
 
+# Log everything to a file so a silent GUI-launch failure can be diagnosed:
+#   cat /tmp/video-organizer-launch.log
+LOG="/tmp/video-organizer-launch.log"
+exec > "$LOG" 2>&1
+echo "=== launch $(date) ==="
+echo "argv0=$0"
+echo "whoami=$(whoami) HOME=$HOME PWD=$PWD"
+
 # GUI-launched apps get a minimal PATH — add the usual Homebrew locations so
 # python3 and ffmpeg are found.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+echo "python3=$(command -v python3)  ffmpeg=$(command -v ffmpeg)"
 
 # If macOS "translocated" us (quarantined unsigned app run from a random
 # read-only copy), $0 lives under AppTranslocation and app.py isn't next to us.
@@ -17,7 +26,8 @@ case "$0" in
 esac
 
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
-cd "$REPO" || exit 1
+echo "REPO=$REPO  app.py exists=$([ -f "$REPO/app.py" ] && echo yes || echo NO)"
+cd "$REPO" || { echo "cd failed"; exit 1; }
 if [ ! -f "$REPO/app.py" ]; then
   osascript -e 'display alert "Video Organizer files not found" message "app.py is not next to this app. Keep Video Organizer.app inside the project folder (do not move it out on its own)."'
   exit 1
@@ -32,6 +42,6 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
   exit 1
 fi
 
-# Run the server (opens the browser itself). Logs go to the system log; run
-# `python3 app.py` in Terminal instead if you need to see them live.
+# Run the server (opens the browser itself).
+echo "starting: python3 app.py"
 exec python3 app.py
