@@ -1011,11 +1011,42 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"saved": saved, "assets": list_assets(root)})
 
 
+def already_running():
+    """True if something is already listening on our port (another instance)."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.3)
+    try:
+        s.connect((HOST, PORT))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 def main():
     if not have_tools():
         print("WARNING: ffmpeg/ffprobe not found on PATH. Previews and durations will not work.")
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
     url = f"http://{HOST}:{PORT}/"
+
+    # If the app is already running (e.g. launched twice from the Dock), don't
+    # crash on a port clash — just open the browser to the existing instance.
+    if already_running():
+        print(f"Video Organizer is already running — opening {url}")
+        try:
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    try:
+        srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    except OSError:
+        try:
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001
+            pass
+        return
     print(f"Clip Organizer running at {url}")
     print("Press Ctrl+C to stop (or just close the browser tab).")
 
