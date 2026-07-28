@@ -7,8 +7,21 @@
 # python3 and ffmpeg are found.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+# If macOS "translocated" us (quarantined unsigned app run from a random
+# read-only copy), $0 lives under AppTranslocation and app.py isn't next to us.
+# Tell the user how to fix it instead of silently flashing and closing.
+case "$0" in
+  */AppTranslocation/*)
+    osascript -e 'display alert "One-time setup for Video Organizer" message "macOS is running this app from a sandbox, so it cannot find its files. In Terminal, run:\n\nxattr -dr com.apple.quarantine \"/path/to/Video Organizer.app\"\n\n(replace the path with where this app lives), then open it again."'
+    exit 1 ;;
+esac
+
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$REPO" || exit 1
+if [ ! -f "$REPO/app.py" ]; then
+  osascript -e 'display alert "Video Organizer files not found" message "app.py is not next to this app. Keep Video Organizer.app inside the project folder (do not move it out on its own)."'
+  exit 1
+fi
 
 if ! command -v python3 >/dev/null 2>&1; then
   osascript -e 'display alert "Python 3 not found" message "Install it with:  brew install python\n\nThen open Video Organizer again."'
