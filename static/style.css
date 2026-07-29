@@ -334,6 +334,7 @@ button.primary:hover:not(:disabled) { background: #6cb3ff; }
 .s1-marks button[data-mark="outro"].active { background: #7a5cf0; border-color: #7a5cf0; color: #fff; font-weight: 700; }
 .s1-open, .s1-skip { margin-left: auto; }
 .s1-skip { margin-left: 0; }
+.s1-finish { color: var(--muted); }
 
 .s1-lines { display: flex; flex-wrap: wrap; gap: 10px; }
 .s1-line {

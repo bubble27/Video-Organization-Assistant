@@ -147,6 +147,19 @@ function skipCurrent() {
   showCurrent();
 }
 
+$("#s1Finish").addEventListener("click", skipToStage2);
+function skipToStage2() {
+  if (S1.busy) return;
+  const remaining = S1.clips.length;
+  if (remaining > 0) {
+    const noun = remaining === 1 ? "clip" : "clips";
+    const ok = window.confirm(
+      `${remaining} ${noun} will stay outside any line folder, unsorted. Continue to Stage 2?`);
+    if (!ok) return;
+  }
+  finishStage1();
+}
+
 // ---- line buttons ---------------------------------------------------------
 function s1Line(n) { return S1.lines.find((l) => l.n === n); }
 function nextLineNumber() {
@@ -253,6 +266,10 @@ function finishStage1() {
   vid.classList.add("hidden");
   $("#s1Count").textContent = "";
   $("#s1Name").textContent = "";
+  const left = S1.clips.length;
+  $("#s1Done").textContent = left
+    ? `➡️ Moving on — ${left} clip${left === 1 ? "" : "s"} left unsorted`
+    : "✅ All clips sorted!";
   $("#s1Done").classList.remove("hidden");
   setTimeout(startAssetPrompts, 500);
 }

@@ -6,7 +6,11 @@
 # Log everything to a file so a silent GUI-launch failure can be diagnosed:
 #   cat /tmp/video-organizer-launch.log
 LOG="/tmp/video-organizer-launch.log"
-exec > "$LOG" 2>&1
+if [ -n "$VOA_UPDATED" ]; then
+  exec >> "$LOG" 2>&1  # relaunch after auto-update: keep the pre-update lines
+else
+  exec > "$LOG" 2>&1
+fi
 echo "=== launch $(date) ==="
 echo "argv0=$0"
 echo "whoami=$(whoami) HOME=$HOME PWD=$PWD"
@@ -14,7 +18,33 @@ echo "whoami=$(whoami) HOME=$HOME PWD=$PWD"
 # GUI-launched apps get a minimal PATH — add the usual Homebrew locations so
 # python3 and ffmpeg are found.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-echo "python3=$(command -v python3)  ffmpeg=$(command -v ffmpeg)"
+
+# Use whatever python3 is on PATH (Homebrew's, first in PATH above). This
+# must NOT be Apple's own python3/bash: macOS's file-privacy system (TCC)
+# hard-denies Full Disk Access / Documents Folder grants to any Apple-signed
+# system binary ("Denied (Service Policy)", no UI toggle can override it).
+# Homebrew's python3 re-execs into its own helper app (Resources/Python.app)
+# to get GUI capabilities; that helper is NOT Apple-signed, so it CAN be
+# granted file access normally — see the EPERM handling below for exactly
+# which path to grant.
+PYTHON=""
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON="$(command -v python3)"
+fi
+# If this is a "framework build" (Homebrew's python@3.x, python.org
+# installers), its bin/python3 stub itself gets a synthetic, ungrantable TCC
+# identity for the file-access check it does on startup, and dies with EPERM
+# before ever reaching its own Resources/Python.app helper — the one that
+# actually IS the app.py process, and the one that our earlier Full Disk
+# Access grant applies to. Skip the stub and call that helper directly.
+if [ -n "$PYTHON" ]; then
+  REAL_PYTHON="$("$PYTHON" -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$PYTHON")"
+  NESTED="$(dirname "$REAL_PYTHON")/../Resources/Python.app/Contents/MacOS/Python"
+  if [ -x "$NESTED" ]; then
+    PYTHON="$NESTED"
+  fi
+fi
+echo "python3=$PYTHON  ffmpeg=$(command -v ffmpeg)"
 
 # If macOS "translocated" us (quarantined unsigned app run from a random
 # read-only copy), $0 lives under AppTranslocation and app.py isn't next to us.
@@ -33,7 +63,54 @@ if [ ! -f "$REPO/app.py" ]; then
   exit 1
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
+# Auto-update: pull any commits pushed to the remote before launching, then
+# relaunch so the freshly-pulled version of this very script runs (editing a
+# running bash script's file out from under itself corrupts the in-flight
+# read). Skipped on the second pass (VOA_UPDATED set) so a bad pull can't
+# loop forever, and skipped entirely if VOA_SKIP_UPDATE=1 or there's no git
+# repo, no configured remote, uncommitted local changes, or the fetch times
+# out / fails (offline) — any of those just fall through to launching
+# whatever is already on disk.
+if [ -z "$VOA_UPDATED" ] && [ "${VOA_SKIP_UPDATE:-0}" != "1" ] && command -v git >/dev/null 2>&1 && [ -d "$REPO/.git" ]; then
+  BRANCH="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  if [ -n "$BRANCH" ] && git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
+    echo "Checking for updates on branch $BRANCH..."
+    git -C "$REPO" fetch origin "$BRANCH" --quiet &
+    FETCH_PID=$!
+    WAITED=0
+    while kill -0 "$FETCH_PID" 2>/dev/null && [ "$WAITED" -lt 8 ]; do
+      sleep 1
+      WAITED=$((WAITED + 1))
+    done
+    if kill -0 "$FETCH_PID" 2>/dev/null; then
+      echo "Fetch timed out — skipping update check."
+      kill "$FETCH_PID" 2>/dev/null
+      wait "$FETCH_PID" 2>/dev/null
+    elif wait "$FETCH_PID"; then
+      LOCAL="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
+      REMOTE="$(git -C "$REPO" rev-parse "origin/$BRANCH" 2>/dev/null)"
+      if [ -n "$LOCAL" ] && [ -n "$REMOTE" ] && [ "$LOCAL" != "$REMOTE" ]; then
+        if [ -z "$(git -C "$REPO" status --porcelain 2>/dev/null)" ]; then
+          echo "Update available ($LOCAL -> $REMOTE). Pulling..."
+          if git -C "$REPO" merge --ff-only "origin/$BRANCH" --quiet; then
+            echo "Updated. Relaunching..."
+            VOA_UPDATED=1 exec "$0" "$@"
+          else
+            echo "Can't fast-forward (local history diverged) — skipping auto-update."
+          fi
+        else
+          echo "Local changes present — skipping auto-update."
+        fi
+      else
+        echo "Already up to date."
+      fi
+    else
+      echo "Fetch failed — skipping update check."
+    fi
+  fi
+fi
+
+if [ -z "$PYTHON" ]; then
   osascript -e 'display alert "Python 3 not found" message "Install it with:  brew install python\n\nThen open Video Organizer again."'
   exit 1
 fi
@@ -42,6 +119,18 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
   exit 1
 fi
 
-# Run the server (opens the browser itself).
-echo "starting: python3 app.py"
-exec python3 app.py
+# Run the server (opens the browser itself). Not exec'd, so we can check for
+# a TCC file-access denial below and explain it instead of silently exiting.
+echo "starting: $PYTHON app.py"
+"$PYTHON" app.py
+status=$?
+
+if [ $status -ne 0 ] && grep -q "Operation not permitted" "$LOG"; then
+  # The failing binary printed itself as the message prefix, e.g.:
+  #   /opt/homebrew/.../Resources/Python.app/Contents/MacOS/Python: can't open file...
+  # Grant Full Disk Access to the enclosing .app bundle, not the raw binary.
+  FAILED_BIN="$(grep "Operation not permitted" "$LOG" | tail -1 | sed -E 's/^([^:]+):.*/\1/')"
+  GRANT_PATH="$(echo "$FAILED_BIN" | sed -E 's#(.*\.app)/.*#\1#')"
+  osascript -e "display alert \"Video Organizer needs file access\" message \"macOS is blocking file access from:\n\n$GRANT_PATH\n\nFix: System Settings → Privacy & Security → Full Disk Access → click + → press Cmd+Shift+G and paste the path above → enable it → open Video Organizer again.\""
+fi
+exit $status
